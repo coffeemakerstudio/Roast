@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { EngineEffectRegistry, EngineSystemRegistry, COUNTER_ADD_EFFECT_ID, COUNTER_CAPABILITY, COUNTER_RESET_EFFECT_ID, COUNTER_SET_EFFECT_ID, registerCounterCommands, validateCounterEffectSettings, validateCounterTriggerBinding } from "@coffeemakerstudio/roast";
+import { EngineEffectRegistry, EngineSystemRegistry, COUNTER_ADD_EFFECT_ID, COUNTER_CAPABILITY, COUNTER_RESET_EFFECT_ID, COUNTER_SET_EFFECT_ID, registerCounterCommands, validateCounterEffectSettings, validateCounterTriggerBinding } from "../src/index.ts";
 
 const target = { type: "counter" as const, counterId: "coins" };
 

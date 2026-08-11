@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { canonicalizeCounterStates, createCounterState, validateCounterState } from "@coffeemakerstudio/roast";
+import { canonicalizeCounterStates, createCounterState, validateCounterState } from "../src/index.ts";
 
 test("counter state is complete, detached, and canonically ordered", () => {
 	const created = createCounterState({ id: "team-0-score" });

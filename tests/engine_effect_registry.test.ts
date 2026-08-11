@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { EngineEffectRegistry } from "@coffeemakerstudio/roast";
+import { EngineEffectRegistry } from "../src/index.ts";
 
 test("effect catalog validates payloads and describes only JSON-safe metadata", () => {
 	const effects = new EngineEffectRegistry().register({

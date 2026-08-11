@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { engine, createMovementState, createTransformState, validateMovementState, validateTransformState } from "@coffeemakerstudio/roast";
+import { engine, createMovementState, createTransformState, validateMovementState, validateTransformState } from "../src/index.ts";
 
 test("generic Transform and Movement state is versioned, typed, and detached", () => {
 	const transform = createTransformState({ position: { x: 10, y: 20 }, rotation: 45 });

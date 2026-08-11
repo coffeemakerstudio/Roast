@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { EngineEffectRegistry, EngineSystemRegistry } from "@coffeemakerstudio/roast";
+import { EngineEffectRegistry, EngineSystemRegistry } from "../src/index.ts";
 
 test("framework validation requires an accepted Effect and its capabilities", () => {
 	const effects = new EngineEffectRegistry().register({ id: "movement.apply-impulse", requiresCapability: ["movement.velocity"] });

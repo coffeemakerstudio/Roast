@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { EngineTriggerActivationQueue, createCollisionEnterTriggerEvent, createEnvironmentActivationTriggerEvent, createRoundStartTriggerEvent, createTickTriggerEvent, createTriggerActivation, validateTriggerActivation, validateTriggerEvent } from "@coffeemakerstudio/roast";
+import { EngineTriggerActivationQueue, createCollisionEnterTriggerEvent, createEnvironmentActivationTriggerEvent, createRoundStartTriggerEvent, createTickTriggerEvent, createTriggerActivation, validateTriggerActivation, validateTriggerEvent } from "../src/index.ts";
 
 test("typed trigger events are versioned, detached, and JSON-safe", () => {
 	const tick = createTickTriggerEvent({ sourceId: "world", sequence: 4, dt: 0.016 });

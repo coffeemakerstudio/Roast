@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { ApplicationAudioMixer, AudioEmitter, AudioRuntime, audio, createAudioSettings, validateAudioSettings, type AudioOutputPort } from "@coffeemakerstudio/roast";
+import { ApplicationAudioMixer, AudioEmitter, AudioRuntime, audio, createAudioSettings, validateAudioSettings, type AudioOutputPort } from "../src/index.ts";
 
 const play = (sourceId: string, soundId: string, priority: number = 0, extra: object = {}) => audio.command.play({ sourceId, soundId, bus: "effects", priority, ...extra });
 
