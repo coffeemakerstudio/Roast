@@ -51,7 +51,7 @@ export type { CollisionCommandBinding } from "./collisionCommand.js";
 export { COUNTER_SCHEMA_VERSION, canonicalizeCounterStates, createCounterState, validateCounterState } from "../contracts/counterState.js";
 export type { CounterState } from "../contracts/counterState.js";
 export { NUMERIC_STATE_SCHEMA_VERSION, NUMERIC_THRESHOLD_COMPARATORS, validateNumericThreshold, validateNumericThresholdBinding, validateNumericThresholdBindings } from "../contracts/numericState.js";
-export type { NumericThreshold, NumericThresholdBinding, NumericThresholdComparator, NumericThresholdEffect } from "../contracts/numericState.js";
+export type { NumericStateOwner, NumericThreshold, NumericThresholdBinding, NumericThresholdComparator, NumericThresholdEffect } from "../contracts/numericState.js";
 export type { EngineFrameworkSettings, EngineSystemDefinition, EngineWorldSettings };
 export { collectAssetReferences } from "./assetReferences.js";
 export type { RenderAssetReference } from "./assetReferences.js";
