@@ -229,8 +229,8 @@ class RuntimeEntity {
       throw new Error("Runtime entities require an id and capabilities");
     }
     this.id = value.id;
-    this.capabilities = [...value.capabilities].filter((capability) => typeof capability === "string");
-    this.components = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "id" && key !== "capabilities"));
+    this.capabilities = [...value.capabilities].filter((capability) => typeof capability === "string").sort();
+    this.components = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "id" && key !== "capabilities").map(([key, component]) => [key, cloneJson(component)]));
   }
   hasCapability(capability) {
     return this.capabilities.includes(capability);
@@ -238,17 +238,25 @@ class RuntimeEntity {
   getComponent(capability) {
     return this.components[capability];
   }
+  toSettings() {
+    const settings = { id: this.id, capabilities: [...this.capabilities], ...this.components };
+    assertJsonValue(settings);
+    return cloneJson(settings);
+  }
 }
 
 class EngineRuntime {
   entities;
   order;
   executors;
+  metadata;
   constructor(settings, registry) {
     if (!settings.framework)
       throw new Error("A runtime requires a selected framework");
     registry.validate(settings.framework);
     this.entities = settings.entities.map((entity) => new RuntimeEntity(entity)).sort((a, b) => a.id.localeCompare(b.id));
+    const { entities: _entities, ...metadata } = settings;
+    this.metadata = structuredClone(metadata);
     this.order = [...settings.framework.systemOrder];
     this.executors = this.order.map((id) => registry.getExecutor(id)).filter((executor) => Boolean(executor));
   }
@@ -264,12 +272,32 @@ class EngineRuntime {
     for (const executor of this.executors)
       executor(context);
   }
+  toSettings() {
+    const entities = this.entities.map((entity) => entity.toSettings());
+    const settings = { ...this.metadata, entities };
+    assertJsonValue(settings);
+    return cloneJson(settings);
+  }
+  snapshot() {
+    return this.toSettings();
+  }
+  static restore(settings, registry) {
+    return new EngineRuntime(settings, registry);
+  }
   getEntity(id) {
     return this.entities.find((entity) => entity.id === id);
   }
   getEntities() {
     return this.entities;
   }
+}
+function cloneJson(value) {
+  if (Array.isArray(value))
+    return value.map((item) => cloneJson(item));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, cloneJson(item)]));
+  }
+  return value;
 }
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
