@@ -1,6 +1,7 @@
 import { assertJsonValue, type JsonValue } from "../contracts/systemSettings.js";
 import { canonicalizeCounterStates, type CounterState } from "../contracts/counterState.js";
-import type { EngineFrameworkSettings } from "./systemRegistry.js";
+import { EngineRuntime } from "./runtime.js";
+import type { EngineFrameworkSettings, EngineSystemRegistry } from "./systemRegistry.js";
 
 /** Generic JSON-safe world settings with no KORE gameplay assumptions. */
 export interface EngineWorldSettings {
@@ -28,13 +29,17 @@ export class EngineWorldBuilder {
 		if (!id || !isPositiveVector(worldSize)) throw new Error("A world requires an ID and positive finite worldSize");
 	}
 	public setBackground(background: JsonValue): this { assertJsonValue(background); this.background = clone(background); return this; }
-	public addEntity(entity: JsonValue): this { assertJsonValue(entity); this.entities.push(clone(entity)); return this; }
-	public addStructure(structure: JsonValue): this { assertJsonValue(structure); this.structures.push(clone(structure)); return this; }
-	public addEffect(effect: JsonValue): this { assertJsonValue(effect); this.effects.push(clone(effect)); return this; }
+	public addEntity<T>(entity: T): this { assertJsonValue(entity); this.entities.push(clone(entity) as JsonValue); return this; }
+	public addStructure<T>(structure: T): this { assertJsonValue(structure); this.structures.push(clone(structure) as JsonValue); return this; }
+	public addEffect<T>(effect: T): this { assertJsonValue(effect); this.effects.push(clone(effect) as JsonValue); return this; }
 	public addCounter(counter: CounterState): this { this.counters.push(...canonicalizeCounterStates([counter])); return this; }
 	public useFramework(framework: EngineFrameworkSettings): this { this.framework = clone(framework); return this; }
 	public build(): EngineWorldSettings {
 		return { schemaVersion: 1, id: this.id, worldSize: clone(this.worldSize), ...(this.background === undefined ? {} : { background: clone(this.background) }), entities: clone(this.entities), structures: clone(this.structures), effects: clone(this.effects), counters: canonicalizeCounterStates(this.counters), ...(this.framework ? { framework: clone(this.framework) } : {}) };
+	}
+	public buildRuntime(registry: EngineSystemRegistry): EngineRuntime {
+		if (!this.framework) throw new Error("A runtime requires a selected framework");
+		return new EngineRuntime(this.build(), registry);
 	}
 	public buildJson(space: number = 2): string { return JSON.stringify(this.build(), null, space); }
 }

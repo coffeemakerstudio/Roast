@@ -1,6 +1,21 @@
 import { assertJsonValue, type JsonValue, type SystemSettings } from "../contracts/systemSettings.js";
 import type { EngineEffectRegistry, EngineEffectSettings } from "./effectRegistry.js";
 
+export interface EngineRuntimeEntity {
+	readonly id: string;
+	readonly capabilities: readonly string[];
+	hasCapability(capability: string): boolean;
+	getComponent<T = unknown>(capability: string): T | undefined;
+}
+
+export interface EngineSystemContext {
+	readonly deltaSeconds: number;
+	readonly entities: readonly EngineRuntimeEntity[];
+	query(requiredCapabilities: readonly string[]): readonly EngineRuntimeEntity[];
+}
+
+export type EngineSystemExecutor = (context: EngineSystemContext) => void;
+
 /** Declarative metadata used by SDK framework selection; it never imports runtime systems. */
 export interface EngineSystemDefinition {
 	id: string;
@@ -18,6 +33,8 @@ export interface EngineSystemDefinition {
 	state?: Record<string, JsonValue>;
 	/** Effect IDs interpreted by this system; this metadata is not serialized. */
 	acceptsEffects?: readonly string[];
+	/** Capability states required on each entity processed by the executable system. */
+	requiresCapabilities?: readonly string[];
 }
 
 export type EngineFrameworkSettings = { schemaVersion: 1; systems: SystemSettings[]; systemOrder: string[] };
@@ -28,13 +45,23 @@ export type EngineFrameworkSettings = { schemaVersion: 1; systems: SystemSetting
  */
 export class EngineSystemRegistry {
 	private readonly definitions = new Map<string, EngineSystemDefinition>();
+	private readonly executors = new Map<string, EngineSystemExecutor>();
 
-	public register(definition: EngineSystemDefinition): this {
+	public register(definition: EngineSystemDefinition, executor?: EngineSystemExecutor): this {
 		validateDefinition(definition);
 		if (this.definitions.has(definition.id)) throw new Error(`Duplicate system definition '${definition.id}'`);
 		this.definitions.set(definition.id, clone(definition));
+		if (executor) this.executors.set(definition.id, executor);
 		return this;
 	}
+
+	public getDefinition(id: string): EngineSystemDefinition {
+		const definition = this.definitions.get(id);
+		if (!definition) throw new Error(`Unknown system '${id}'`);
+		return clone(definition);
+	}
+
+	public getExecutor(id: string): EngineSystemExecutor | undefined { return this.executors.get(id); }
 
 	/** Selects requested systems plus transitive capability providers in deterministic order. */
 	public select(ids: readonly string[]): EngineFrameworkSettings {
@@ -100,10 +127,11 @@ export class EngineSystemRegistry {
 function validateDefinition(definition: EngineSystemDefinition): void {
 	if (!definition || typeof definition.id !== "string" || !/^[a-z0-9.-]{1,80}$/.test(definition.id)) throw new Error("Invalid system definition ID");
 	if (definition.schemaVersion !== undefined && definition.schemaVersion !== 1) throw new Error("Unsupported system definition version");
-	for (const list of [definition.provides, definition.requires, definition.before, definition.after, definition.replaces]) {
+	for (const list of [definition.provides, definition.requires, definition.before, definition.after, definition.replaces, definition.requiresCapabilities]) {
 		if (list !== undefined && (!Array.isArray(list) || list.some(value => typeof value !== "string" || value.length === 0))) throw new Error(`Invalid system definition '${definition.id}'`);
 	}
 	if (definition.acceptsEffects !== undefined && (!Array.isArray(definition.acceptsEffects) || definition.acceptsEffects.some(value => typeof value !== "string" || value.length === 0))) throw new Error(`Invalid accepted Effects for '${definition.id}'`);
+	if (definition.requiresCapabilities !== undefined && (!Array.isArray(definition.requiresCapabilities) || definition.requiresCapabilities.some(value => typeof value !== "string" || value.length === 0))) throw new Error(`Invalid required capabilities for '${definition.id}'`);
 	assertJsonValue(definition.state ?? {});
 }
 

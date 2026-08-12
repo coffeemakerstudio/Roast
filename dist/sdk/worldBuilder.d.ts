@@ -1,6 +1,7 @@
 import { type JsonValue } from "../contracts/systemSettings.js";
 import { type CounterState } from "../contracts/counterState.js";
-import type { EngineFrameworkSettings } from "./systemRegistry.js";
+import { EngineRuntime } from "./runtime.js";
+import type { EngineFrameworkSettings, EngineSystemRegistry } from "./systemRegistry.js";
 /** Generic JSON-safe world settings with no KORE gameplay assumptions. */
 export interface EngineWorldSettings {
     schemaVersion: 1;
@@ -31,11 +32,12 @@ export declare class EngineWorldBuilder {
         y: number;
     });
     setBackground(background: JsonValue): this;
-    addEntity(entity: JsonValue): this;
-    addStructure(structure: JsonValue): this;
-    addEffect(effect: JsonValue): this;
+    addEntity<T>(entity: T): this;
+    addStructure<T>(structure: T): this;
+    addEffect<T>(effect: T): this;
     addCounter(counter: CounterState): this;
     useFramework(framework: EngineFrameworkSettings): this;
     build(): EngineWorldSettings;
+    buildRuntime(registry: EngineSystemRegistry): EngineRuntime;
     buildJson(space?: number): string;
 }

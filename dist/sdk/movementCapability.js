@@ -7,7 +7,7 @@ export const MOVEMENT_APPLY_FORCE_FIELD_EFFECT_ID = "movement.apply-force-field"
 export const MOVEMENT_APPLY_FORCE_TO_ENTITY_EFFECT_ID = "movement.apply-force-to-entity";
 export const MOVEMENT_COMMAND_EFFECT_IDS = [MOVEMENT_SET_VELOCITY_EFFECT_ID, MOVEMENT_ADD_VELOCITY_EFFECT_ID, MOVEMENT_SCALE_SPEED_EFFECT_ID, MOVEMENT_APPLY_FORCE_FIELD_EFFECT_ID, MOVEMENT_APPLY_FORCE_TO_ENTITY_EFFECT_ID];
 export function movementSystemDefinition() {
-    return { id: "core.movement", provides: [MOVEMENT_CAPABILITY], acceptsEffects: [...MOVEMENT_COMMAND_EFFECT_IDS], before: ["core.playback"] };
+    return { id: "core.movement", provides: [MOVEMENT_CAPABILITY], requiresCapabilities: ["transform.state", "movement.state"], acceptsEffects: [...MOVEMENT_COMMAND_EFFECT_IDS], before: ["core.playback"] };
 }
 export function registerMovementSystem(registry) {
     return registry.register(movementSystemDefinition());

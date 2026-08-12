@@ -1,5 +1,6 @@
 import { assertJsonValue } from "../contracts/systemSettings.js";
 import { canonicalizeCounterStates } from "../contracts/counterState.js";
+import { EngineRuntime } from "./runtime.js";
 /** Generic authoring builder for worlds, entities, structures, and framework metadata. */
 export class EngineWorldBuilder {
     id;
@@ -24,6 +25,11 @@ export class EngineWorldBuilder {
     useFramework(framework) { this.framework = clone(framework); return this; }
     build() {
         return { schemaVersion: 1, id: this.id, worldSize: clone(this.worldSize), ...(this.background === undefined ? {} : { background: clone(this.background) }), entities: clone(this.entities), structures: clone(this.structures), effects: clone(this.effects), counters: canonicalizeCounterStates(this.counters), ...(this.framework ? { framework: clone(this.framework) } : {}) };
+    }
+    buildRuntime(registry) {
+        if (!this.framework)
+            throw new Error("A runtime requires a selected framework");
+        return new EngineRuntime(this.build(), registry);
     }
     buildJson(space = 2) { return JSON.stringify(this.build(), null, space); }
 }

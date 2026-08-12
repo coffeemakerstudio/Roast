@@ -22,12 +22,24 @@ function assertJsonValue(value) {
 // src/sdk/systemRegistry.ts
 class EngineSystemRegistry {
   definitions = new Map;
-  register(definition) {
+  executors = new Map;
+  register(definition, executor) {
     validateDefinition(definition);
     if (this.definitions.has(definition.id))
       throw new Error(`Duplicate system definition '${definition.id}'`);
     this.definitions.set(definition.id, clone(definition));
+    if (executor)
+      this.executors.set(definition.id, executor);
     return this;
+  }
+  getDefinition(id) {
+    const definition = this.definitions.get(id);
+    if (!definition)
+      throw new Error(`Unknown system '${id}'`);
+    return clone(definition);
+  }
+  getExecutor(id) {
+    return this.executors.get(id);
   }
   select(ids) {
     const selected = new Set;
@@ -101,12 +113,14 @@ function validateDefinition(definition) {
     throw new Error("Invalid system definition ID");
   if (definition.schemaVersion !== undefined && definition.schemaVersion !== 1)
     throw new Error("Unsupported system definition version");
-  for (const list of [definition.provides, definition.requires, definition.before, definition.after, definition.replaces]) {
+  for (const list of [definition.provides, definition.requires, definition.before, definition.after, definition.replaces, definition.requiresCapabilities]) {
     if (list !== undefined && (!Array.isArray(list) || list.some((value) => typeof value !== "string" || value.length === 0)))
       throw new Error(`Invalid system definition '${definition.id}'`);
   }
   if (definition.acceptsEffects !== undefined && (!Array.isArray(definition.acceptsEffects) || definition.acceptsEffects.some((value) => typeof value !== "string" || value.length === 0)))
     throw new Error(`Invalid accepted Effects for '${definition.id}'`);
+  if (definition.requiresCapabilities !== undefined && (!Array.isArray(definition.requiresCapabilities) || definition.requiresCapabilities.some((value) => typeof value !== "string" || value.length === 0)))
+    throw new Error(`Invalid required capabilities for '${definition.id}'`);
   assertJsonValue(definition.state ?? {});
 }
 function provides(definition, capability) {
@@ -205,6 +219,62 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// src/sdk/runtime.ts
+class RuntimeEntity {
+  id;
+  capabilities;
+  components;
+  constructor(value) {
+    if (!isRecord2(value) || typeof value.id !== "string" || !Array.isArray(value.capabilities)) {
+      throw new Error("Runtime entities require an id and capabilities");
+    }
+    this.id = value.id;
+    this.capabilities = [...value.capabilities].filter((capability) => typeof capability === "string");
+    this.components = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "id" && key !== "capabilities"));
+  }
+  hasCapability(capability) {
+    return this.capabilities.includes(capability);
+  }
+  getComponent(capability) {
+    return this.components[capability];
+  }
+}
+
+class EngineRuntime {
+  entities;
+  order;
+  executors;
+  constructor(settings, registry) {
+    if (!settings.framework)
+      throw new Error("A runtime requires a selected framework");
+    registry.validate(settings.framework);
+    this.entities = settings.entities.map((entity) => new RuntimeEntity(entity)).sort((a, b) => a.id.localeCompare(b.id));
+    this.order = [...settings.framework.systemOrder];
+    this.executors = this.order.map((id) => registry.getExecutor(id)).filter((executor) => Boolean(executor));
+  }
+  tick(deltaSeconds) {
+    if (!Number.isFinite(deltaSeconds) || deltaSeconds < 0)
+      throw new Error("deltaSeconds must be finite and non-negative");
+    const entities = this.entities;
+    const context = {
+      deltaSeconds,
+      entities,
+      query: (required) => entities.filter((entity) => required.every((capability) => entity.hasCapability(capability)))
+    };
+    for (const executor of this.executors)
+      executor(context);
+  }
+  getEntity(id) {
+    return this.entities.find((entity) => entity.id === id);
+  }
+  getEntities() {
+    return this.entities;
+  }
+}
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // src/sdk/worldBuilder.ts
 class EngineWorldBuilder {
   id;
@@ -251,6 +321,11 @@ class EngineWorldBuilder {
   }
   build() {
     return { schemaVersion: 1, id: this.id, worldSize: clone2(this.worldSize), ...this.background === undefined ? {} : { background: clone2(this.background) }, entities: clone2(this.entities), structures: clone2(this.structures), effects: clone2(this.effects), counters: canonicalizeCounterStates(this.counters), ...this.framework ? { framework: clone2(this.framework) } : {} };
+  }
+  buildRuntime(registry) {
+    if (!this.framework)
+      throw new Error("A runtime requires a selected framework");
+    return new EngineRuntime(this.build(), registry);
   }
   buildJson(space = 2) {
     return JSON.stringify(this.build(), null, space);
@@ -381,7 +456,7 @@ var MOVEMENT_APPLY_FORCE_FIELD_EFFECT_ID = "movement.apply-force-field";
 var MOVEMENT_APPLY_FORCE_TO_ENTITY_EFFECT_ID = "movement.apply-force-to-entity";
 var MOVEMENT_COMMAND_EFFECT_IDS = [MOVEMENT_SET_VELOCITY_EFFECT_ID, MOVEMENT_ADD_VELOCITY_EFFECT_ID, MOVEMENT_SCALE_SPEED_EFFECT_ID, MOVEMENT_APPLY_FORCE_FIELD_EFFECT_ID, MOVEMENT_APPLY_FORCE_TO_ENTITY_EFFECT_ID];
 function movementSystemDefinition() {
-  return { id: "core.movement", provides: [MOVEMENT_CAPABILITY], acceptsEffects: [...MOVEMENT_COMMAND_EFFECT_IDS], before: ["core.playback"] };
+  return { id: "core.movement", provides: [MOVEMENT_CAPABILITY], requiresCapabilities: ["transform.state", "movement.state"], acceptsEffects: [...MOVEMENT_COMMAND_EFFECT_IDS], before: ["core.playback"] };
 }
 function registerMovementSystem(registry) {
   return registry.register(movementSystemDefinition());
@@ -2230,14 +2305,14 @@ function clone3(value) {
 }
 // src/presentation-sdk/index.ts
 function validateAnimationSettings(value) {
-  if (!isRecord2(value) || value.schemaVersion !== 1 || typeof value.id !== "string" || typeof value.channel !== "string" || !positiveInteger(value.durationTicks) || !integer(value.priority) || !INTERRUPTIONS.has(value.interruption) || !Array.isArray(value.tracks))
+  if (!isRecord3(value) || value.schemaVersion !== 1 || typeof value.id !== "string" || typeof value.channel !== "string" || !positiveInteger(value.durationTicks) || !integer(value.priority) || !INTERRUPTIONS.has(value.interruption) || !Array.isArray(value.tracks))
     throw new Error("Malformed animation settings");
   assertKeys(value, ["schemaVersion", "id", "channel", "durationTicks", "priority", "interruption", "tracks"], "animation settings");
   validateId2(value.id, "animation ID");
   validateId2(value.channel, "animation channel");
   const ids = new Set;
   for (const track of value.tracks) {
-    if (!isRecord2(track) || typeof track.id !== "string" || !Array.isArray(track.keyframes))
+    if (!isRecord3(track) || typeof track.id !== "string" || !Array.isArray(track.keyframes))
       throw new Error("Malformed animation track");
     assertKeys(track, ["id", "keyframes"], "animation track");
     validateId2(track.id, "animation track ID");
@@ -2246,7 +2321,7 @@ function validateAnimationSettings(value) {
     ids.add(track.id);
     let previous = -1;
     for (const keyframe of track.keyframes) {
-      if (!isRecord2(keyframe) || !nonNegativeInteger(keyframe.tick) || keyframe.tick > value.durationTicks || keyframe.tick <= previous)
+      if (!isRecord3(keyframe) || !nonNegativeInteger(keyframe.tick) || keyframe.tick > value.durationTicks || keyframe.tick <= previous)
         throw new Error("Invalid animation keyframe");
       assertKeys(keyframe, ["tick", "value"], "animation keyframe");
       assertJsonValue(keyframe.value);
@@ -2258,7 +2333,7 @@ function validateAnimationSettings(value) {
   assertJsonValue(value);
 }
 function validatePresentationEvent(value) {
-  if (!isRecord2(value) || value.schemaVersion !== 1 || value.type !== "play" && value.type !== "cancel" || typeof value.eventId !== "string")
+  if (!isRecord3(value) || value.schemaVersion !== 1 || value.type !== "play" && value.type !== "cancel" || typeof value.eventId !== "string")
     throw new Error("Malformed presentation event");
   assertKeys(value, ["schemaVersion", "type", "eventId", "channel", "animationId", "instanceId", "priority", "payload"], "presentation event");
   validateId2(value.eventId, "presentation event ID");
@@ -2279,12 +2354,12 @@ function validatePresentationEvent(value) {
   assertJsonValue(value);
 }
 function validatePresentationRuntimeSettings(value) {
-  if (!isRecord2(value) || value.schemaVersion !== 1 || typeof value.runtimeId !== "string" || !nonNegativeInteger(value.tick) || !nonNegativeInteger(value.sequence) || !Array.isArray(value.active) || !Array.isArray(value.pending))
+  if (!isRecord3(value) || value.schemaVersion !== 1 || typeof value.runtimeId !== "string" || !nonNegativeInteger(value.tick) || !nonNegativeInteger(value.sequence) || !Array.isArray(value.active) || !Array.isArray(value.pending))
     throw new Error("Malformed presentation runtime settings");
   assertKeys(value, ["schemaVersion", "runtimeId", "tick", "sequence", "active", "pending"], "presentation runtime settings");
   validateId2(value.runtimeId, "presentation runtime ID");
   for (const active of value.active) {
-    if (!isRecord2(active) || typeof active.instanceId !== "string" || typeof active.animationId !== "string" || typeof active.channel !== "string" || !nonNegativeInteger(active.startTick) || !integer(active.priority))
+    if (!isRecord3(active) || typeof active.instanceId !== "string" || typeof active.animationId !== "string" || typeof active.channel !== "string" || !nonNegativeInteger(active.startTick) || !integer(active.priority))
       throw new Error("Malformed active animation");
     assertKeys(active, ["instanceId", "animationId", "channel", "startTick", "priority"], "active animation");
     validateId2(active.instanceId, "presentation instance ID");
@@ -2425,7 +2500,7 @@ function assertKeys(value, allowed, name) {
     if (!keys.has(key))
       throw new Error(`Unknown ${name} field '${key}'`);
 }
-function isRecord2(value) {
+function isRecord3(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function integer(value) {
@@ -2597,6 +2672,7 @@ export {
   EngineWorldBuilder,
   EngineTriggerActivationQueue,
   EngineSystemRegistry,
+  EngineRuntime,
   EngineEffectRegistry,
   ENGINE_EFFECT_COMPOSITION_TYPE,
   ENGINE_EFFECT_COMPOSITION_SCHEMA_VERSION,

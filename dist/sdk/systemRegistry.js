@@ -5,13 +5,23 @@ import { assertJsonValue } from "../contracts/systemSettings.js";
  */
 export class EngineSystemRegistry {
     definitions = new Map();
-    register(definition) {
+    executors = new Map();
+    register(definition, executor) {
         validateDefinition(definition);
         if (this.definitions.has(definition.id))
             throw new Error(`Duplicate system definition '${definition.id}'`);
         this.definitions.set(definition.id, clone(definition));
+        if (executor)
+            this.executors.set(definition.id, executor);
         return this;
     }
+    getDefinition(id) {
+        const definition = this.definitions.get(id);
+        if (!definition)
+            throw new Error(`Unknown system '${id}'`);
+        return clone(definition);
+    }
+    getExecutor(id) { return this.executors.get(id); }
     /** Selects requested systems plus transitive capability providers in deterministic order. */
     select(ids) {
         const selected = new Set();
@@ -87,12 +97,14 @@ function validateDefinition(definition) {
         throw new Error("Invalid system definition ID");
     if (definition.schemaVersion !== undefined && definition.schemaVersion !== 1)
         throw new Error("Unsupported system definition version");
-    for (const list of [definition.provides, definition.requires, definition.before, definition.after, definition.replaces]) {
+    for (const list of [definition.provides, definition.requires, definition.before, definition.after, definition.replaces, definition.requiresCapabilities]) {
         if (list !== undefined && (!Array.isArray(list) || list.some(value => typeof value !== "string" || value.length === 0)))
             throw new Error(`Invalid system definition '${definition.id}'`);
     }
     if (definition.acceptsEffects !== undefined && (!Array.isArray(definition.acceptsEffects) || definition.acceptsEffects.some(value => typeof value !== "string" || value.length === 0)))
         throw new Error(`Invalid accepted Effects for '${definition.id}'`);
+    if (definition.requiresCapabilities !== undefined && (!Array.isArray(definition.requiresCapabilities) || definition.requiresCapabilities.some(value => typeof value !== "string" || value.length === 0)))
+        throw new Error(`Invalid required capabilities for '${definition.id}'`);
     assertJsonValue(definition.state ?? {});
 }
 function provides(definition, capability) {

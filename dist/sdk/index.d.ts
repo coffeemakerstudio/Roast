@@ -1,5 +1,6 @@
-import { EngineSystemRegistry, type EngineFrameworkSettings, type EngineSystemDefinition } from "./systemRegistry.js";
+import { EngineSystemRegistry, type EngineFrameworkSettings, type EngineRuntimeEntity, type EngineSystemContext, type EngineSystemDefinition, type EngineSystemExecutor } from "./systemRegistry.js";
 import { EngineWorldBuilder, type EngineWorldSettings } from "./worldBuilder.js";
+import { EngineRuntime } from "./runtime.js";
 import { type JsonValue } from "../contracts/systemSettings.js";
 import { EngineEffectRegistry } from "./effectRegistry.js";
 import { createMovementState, createTransformState } from "./entityState.js";
@@ -21,16 +22,16 @@ export declare const engine: {
     readonly canonicalizeCounterStates: typeof canonicalizeCounterStates;
     readonly validateCounterState: typeof validateCounterState;
     /** Creates a detached JSON-safe generic entity authoring record. */
-    readonly createEntity: <T extends JsonValue>(settings: T) => T;
+    readonly createEntity: <T>(settings: T) => T;
     /** Creates a detached JSON-safe generic structure/geometry authoring record. */
-    readonly createStructure: <T extends JsonValue>(settings: T) => T;
+    readonly createStructure: <T>(settings: T) => T;
     /** Creates a detached JSON-safe generic effect authoring record. */
-    readonly createEffect: <T extends JsonValue>(settings: T) => T;
+    readonly createEffect: <T>(settings: T) => T;
     /** Validates an arbitrary generic SDK value is JSON-safe. */
     readonly validate: (value: unknown) => asserts value is JsonValue;
     readonly buildJson: (settings: EngineWorldSettings | EngineFrameworkSettings, space?: number) => string;
 };
-export { EngineSystemRegistry, EngineWorldBuilder };
+export { EngineRuntime, EngineSystemRegistry, EngineWorldBuilder };
 export { EngineEffectRegistry };
 export { MOVEMENT_ADD_VELOCITY_EFFECT_ID, MOVEMENT_APPLY_FORCE_FIELD_EFFECT_ID, MOVEMENT_APPLY_FORCE_TO_ENTITY_EFFECT_ID, MOVEMENT_CAPABILITY, MOVEMENT_COMMAND_EFFECT_IDS, MOVEMENT_EFFECT_ID, MOVEMENT_SCALE_SPEED_EFFECT_ID, MOVEMENT_SET_VELOCITY_EFFECT_ID, movementSystemDefinition, registerMovementCommands, registerMovementEffect, registerMovementSystem } from "./movementCapability.js";
 export type { MovementForceFieldPayload, MovementForceToEntityPayload, MovementScaleSpeedPayload, MovementVelocityPayload } from "./movementCapability.js";
@@ -56,7 +57,7 @@ export { COUNTER_SCHEMA_VERSION, canonicalizeCounterStates, createCounterState, 
 export type { CounterState } from "../contracts/counterState.js";
 export { NUMERIC_STATE_SCHEMA_VERSION, NUMERIC_THRESHOLD_COMPARATORS, validateNumericThreshold, validateNumericThresholdBinding, validateNumericThresholdBindings } from "../contracts/numericState.js";
 export type { NumericStateOwner, NumericThreshold, NumericThresholdBinding, NumericThresholdComparator, NumericThresholdEffect } from "../contracts/numericState.js";
-export type { EngineFrameworkSettings, EngineSystemDefinition, EngineWorldSettings };
+export type { EngineFrameworkSettings, EngineRuntimeEntity, EngineSystemContext, EngineSystemDefinition, EngineSystemExecutor, EngineWorldSettings };
 export { collectAssetReferences } from "./assetReferences.js";
 export type { RenderAssetReference } from "./assetReferences.js";
 export { advanceTemporalModifier, createTemporalModifier, createTemporalModifierTemplate, validateTemporalModifier, TEMPORAL_DURATION_UNITS, TEMPORAL_MODIFIER_SCHEMA_VERSION } from "../contracts/temporalModifier.js";

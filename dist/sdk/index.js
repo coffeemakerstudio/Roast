@@ -1,5 +1,6 @@
 import { EngineSystemRegistry } from "./systemRegistry.js";
 import { EngineWorldBuilder } from "./worldBuilder.js";
+import { EngineRuntime } from "./runtime.js";
 import { assertJsonValue } from "../contracts/systemSettings.js";
 import { EngineEffectRegistry } from "./effectRegistry.js";
 import { createMovementState, createTransformState } from "./entityState.js";
@@ -24,7 +25,7 @@ export const engine = {
     validate(value) { assertJsonValue(value); },
     buildJson(settings, space = 2) { return JSON.stringify(settings, null, space); },
 };
-export { EngineSystemRegistry, EngineWorldBuilder };
+export { EngineRuntime, EngineSystemRegistry, EngineWorldBuilder };
 export { EngineEffectRegistry };
 export { MOVEMENT_ADD_VELOCITY_EFFECT_ID, MOVEMENT_APPLY_FORCE_FIELD_EFFECT_ID, MOVEMENT_APPLY_FORCE_TO_ENTITY_EFFECT_ID, MOVEMENT_CAPABILITY, MOVEMENT_COMMAND_EFFECT_IDS, MOVEMENT_EFFECT_ID, MOVEMENT_SCALE_SPEED_EFFECT_ID, MOVEMENT_SET_VELOCITY_EFFECT_ID, movementSystemDefinition, registerMovementCommands, registerMovementEffect, registerMovementSystem } from "./movementCapability.js";
 export { applyRadialVelocityDelta, calculateRadialVelocityDelta } from "./movementForceField.js";
