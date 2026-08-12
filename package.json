@@ -1,6 +1,6 @@
 {
   "name": "@coffeemakerstudio/roast",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Coffee Maker Studio generic engine kernel, contracts, SDK, deterministic utilities, audio, and presentation infrastructure.",
   "type": "module",
   "exports": {
