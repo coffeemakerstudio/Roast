@@ -4,6 +4,10 @@
   "description": "Coffee Maker Studio generic engine kernel, contracts, SDK, deterministic utilities, audio, and presentation infrastructure.",
   "type": "module",
   "exports": {
+    "./build": {
+      "types": "./dist/build.d.ts",
+      "import": "./dist/build.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

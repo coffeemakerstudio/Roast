@@ -1,0 +1,10 @@
+import { expect, test } from "bun:test";
+import { binary, createBinarySchemaRegistry, decodePackedSnapshot, encodePackedSnapshotWithDiagnostics } from "../src/index.ts";
+import { compilePackedSnapshotAsset, loadPackedSnapshotAsset } from "../src/build.ts";
+const player = binary.struct({ hp: binary.u16(), flags: binary.u8() });
+const rule = binary.struct({ turn: binary.u32(), active: binary.u8() });
+const registry = createBinarySchemaRegistry().register({ namespace: "asset", typeId: 1, version: 1, schema: player }).register({ namespace: "asset", typeId: 2, version: 1, schema: rule });
+const settings: any = { schemaVersion: 1, id: "asset", worldSize: { x: 10, y: 10 }, entities: [{ id: "a", capabilities: ["player"], player: { hp: 42, flags: 1 } }], structures: [], effects: [], counters: [], ruleState: { turn: 2, active: 1 } };
+const options: any = { registry, components: { player: { namespace: "asset", typeId: 1, version: 1 } }, sections: [{ key: "rule", path: ["ruleState"], schema: { namespace: "asset", typeId: 2, version: 1 }, value: settings.ruleState }] };
+test("compiled asset is deterministic and loads without source settings", () => { const a = compilePackedSnapshotAsset(settings, options); const b = compilePackedSnapshotAsset(structuredClone(settings), options); expect(Array.from(a.bytes)).toEqual(Array.from(b.bytes)); expect(a.manifest.contentHash).toBe(b.manifest.contentHash); const loaded = loadPackedSnapshotAsset(a.bytes); expect(decodePackedSnapshot(loaded, { registry }).settings).toEqual(settings); });
+test("diagnostics do not change encoded bytes", () => { const a = encodePackedSnapshotWithDiagnostics(settings, options).bytes; const b = encodePackedSnapshotWithDiagnostics(settings, { ...options, diagnostics: false }).bytes; expect(Array.from(a)).toEqual(Array.from(b)); });

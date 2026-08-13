@@ -6,6 +6,7 @@ import type {
 } from "./systemRegistry.js";
 import type { EngineWorldSettings } from "./worldBuilder.js";
 import { assertJsonValue, type JsonValue } from "../contracts/systemSettings.js";
+import { binarySnapshot, packedSnapshot, restoreBinarySnapshot, type BinaryStorage, type BinarySnapshotFormat, type PackedSnapshotOptions } from "./binary.js";
 
 class RuntimeEntity implements EngineRuntimeEntity {
   public readonly id: string;
@@ -74,10 +75,15 @@ export class EngineRuntime {
   /** Alias for callers that prefer snapshot terminology. */
   public snapshot(): EngineWorldSettings { return this.toSettings(); }
 
+  /** Opt-in deterministic binary snapshot; the JSON/settings lifecycle remains canonical. */
+  public snapshotBinary(storageOrOptions?: BinaryStorage | { format?: BinarySnapshotFormat; storage?: BinaryStorage; registry?: PackedSnapshotOptions["registry"]; components?: PackedSnapshotOptions["components"]; sections?: PackedSnapshotOptions["sections"] }): Uint8Array { const options = storageOrOptions && "allocate" in storageOrOptions ? { format: "json" as const, storage: storageOrOptions } : (storageOrOptions ?? {}); return options.format === "packed" ? packedSnapshot(this.toSettings(), options.storage, options) : binarySnapshot(this.toSettings(), options.storage); }
+
   /** Restores a runtime from a previously exported snapshot. */
   public static restore(settings: EngineWorldSettings, registry: EngineSystemRegistry): EngineRuntime {
     return new EngineRuntime(settings, registry);
   }
+
+  public static restoreBinary(bytes: Uint8Array, registry: EngineSystemRegistry, binaryOptions?: { registry?: PackedSnapshotOptions["registry"] }): EngineRuntime { return new EngineRuntime(restoreBinarySnapshot(bytes, binaryOptions), registry); }
 
   public getEntity(id: string): EngineRuntimeEntity | undefined { return this.entities.find(entity => entity.id === id); }
   public getEntities(): readonly EngineRuntimeEntity[] { return this.entities; }

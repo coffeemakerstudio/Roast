@@ -28,6 +28,12 @@ export const engine = {
 } as const;
 
 export { EngineRuntime, EngineSystemRegistry, EngineWorldBuilder };
+export { binary, BinarySchemaRegistry, createBinarySchemaRegistry, encodeWithSchema, decodeWithSchema, createBinaryView, schemaIdentity } from "./schema.js";
+export type { BinarySchema as GenericBinarySchema, BinarySchemaCapabilities, BinaryView, RegisteredBinarySchema } from "./schema.js";
+export { ROAST_BINARY_PROTOCOL_VERSION, ROAST_BINARY_SCHEMA_VERSION, ROAST_PACKED_SCHEMA_VERSION, ROAST_BINARY_FRAME_TYPE, ROAST_PACKED_FRAME_TYPE, arrayBufferStorage, createArenaStorage, f32, f64, u8, bool, struct, transformBinarySchema, movementBinarySchema, encodeSchema, decodeSchema, encodeFrame, decodeFrame, encodeSettings, decodeSettings, encodePackedSnapshot, encodePackedSnapshotWithDiagnostics, decodePackedSnapshot, PackedSnapshotView, PackedEntityView, PackedTransformView, PackedMovementView, binaryBackedTransform, binarySnapshot, packedSnapshot, restoreBinarySnapshot, BinaryBackedTransform } from "./binary.js";
+export type { BinarySchemaIdentity, PackedComponentBinding, PackedTypedSection, PackedSnapshotOptions, PackedSchemaDiagnostic, PackedDiagnostics, PackedSnapshotDiagnosticsResult } from "./binary.js";
+export type { BinarySchema } from "./schema.js";
+export type { BinaryStorage, BinarySnapshotFormat } from "./binary.js";
 export { EngineEffectRegistry };
 export { MOVEMENT_ADD_VELOCITY_EFFECT_ID, MOVEMENT_APPLY_FORCE_FIELD_EFFECT_ID, MOVEMENT_APPLY_FORCE_TO_ENTITY_EFFECT_ID, MOVEMENT_CAPABILITY, MOVEMENT_COMMAND_EFFECT_IDS, MOVEMENT_EFFECT_ID, MOVEMENT_SCALE_SPEED_EFFECT_ID, MOVEMENT_SET_VELOCITY_EFFECT_ID, movementSystemDefinition, registerMovementCommands, registerMovementEffect, registerMovementSystem } from "./movementCapability.js";
 export type { MovementForceFieldPayload, MovementForceToEntityPayload, MovementScaleSpeedPayload, MovementVelocityPayload } from "./movementCapability.js";

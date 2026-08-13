@@ -1,0 +1,16 @@
+import { binaryBackedTransform, createArenaStorage, decodePackedSnapshot, decodeSettings, encodePackedSnapshot, encodeSettings, type EngineTransformState } from "../src/index.ts";
+
+const rounds = 2000;
+const fixtures = [
+  { name: "small", value: { schemaVersion: 1, id: "small", worldSize: { x: 100, y: 100 }, entities: [{ id: "entity", capabilities: ["transform.state"], "transform.state": { schemaVersion: 1, position: { x: 1, y: 2 }, rotation: 0 } }], structures: [], effects: [], counters: [] } },
+  { name: "medium", value: { schemaVersion: 1, id: "medium", worldSize: { x: 100, y: 100 }, entities: Array.from({ length: 25 }, (_, i) => ({ id: `entity-${i}`, capabilities: ["transform.state", "movement.state"], "transform.state": { schemaVersion: 1, position: { x: i, y: i * 2 }, rotation: i / 10 }, "movement.state": { schemaVersion: 1, velocity: { x: i, y: -i }, angularVelocity: 0, enabled: true } })), structures: [], effects: [], counters: [] } },
+  { name: "large", value: { schemaVersion: 1, id: "large", worldSize: { x: 100, y: 100 }, entities: Array.from({ length: 250 }, (_, i) => ({ id: `entity-${i}`, capabilities: ["transform.state"], "transform.state": { schemaVersion: 1, position: { x: i, y: i * 2 }, rotation: 0 } })), structures: [], effects: [], counters: [] } },
+] as const;
+function measure(fn: () => void): number { const start = performance.now(); for (let i = 0; i < rounds; i += 1) fn(); return (performance.now() - start) / rounds; }
+for (const fixture of fixtures) {
+  const jsonText = JSON.stringify(fixture.value); const jsonBytes = encodeSettings(fixture.value); const packedBytes = encodePackedSnapshot(fixture.value); const packedView = decodePackedSnapshot(packedBytes);
+  let stored = new Uint8Array(); const arena = { alloc(bytes: Uint8Array) { stored = bytes.slice(); return 1; }, read() { return stored; } }; const arenaStorage = createArenaStorage(arena);
+  const backed = binaryBackedTransform({ schemaVersion: 1, position: { x: 0, y: 0 }, rotation: 0 } as EngineTransformState);
+  console.log(JSON.stringify({ fixture: fixture.name, plainJson: { size: jsonText.length, encodeMs: measure(() => JSON.stringify(fixture.value)) }, existingJsonBinary: { size: jsonBytes.byteLength, encodeMs: measure(() => encodeSettings(fixture.value)), decodeMs: measure(() => decodeSettings(jsonBytes)) }, packedArrayBuffer: { size: packedBytes.byteLength, encodeMs: measure(() => encodePackedSnapshot(fixture.value)), viewMs: measure(() => decodePackedSnapshot(packedBytes)) }, packedBumpArena: { size: arenaStorage.allocate(packedBytes).byteLength, allocationMs: measure(() => arenaStorage.allocate(packedBytes)) }, zeroCopyView: { createMs: measure(() => decodePackedSnapshot(packedBytes).view.getEntities()), fullObjectDecodeMs: measure(() => packedView.settings.entities.map(entity => structuredClone(entity))) }, binaryBackedIncremental: { mutationAndReadyMs: measure(() => { backed.x += 1; backed.toBinary(); }) } }));
+}
+const entityCount = 250; const frame = { ...fixtures[2]!.value }; console.log(JSON.stringify({ snapshotPreparation60Hz: { entities: entityCount, ticks: 60, totalMs: measure(() => encodePackedSnapshot(frame)) * 60, perTickMs: measure(() => encodePackedSnapshot(frame)) } }));

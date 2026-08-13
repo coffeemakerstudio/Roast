@@ -219,13 +219,1055 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// src/sdk/schema.ts
+class Writer {
+  bytes = [];
+  u8(v) {
+    if (!Number.isInteger(v) || v < 0 || v > 255)
+      throw new Error("Invalid u8");
+    this.bytes.push(v);
+  }
+  raw(b) {
+    for (const x of b)
+      this.bytes.push(x);
+  }
+  fixed(n, f) {
+    const b = new Uint8Array(n);
+    f(new DataView(b.buffer));
+    this.raw(b);
+  }
+  result() {
+    return Uint8Array.from(this.bytes);
+  }
+}
+
+class Reader {
+  bytes;
+  offset;
+  constructor(bytes, offset = 0) {
+    this.bytes = bytes;
+    this.offset = offset;
+  }
+  need(n) {
+    if (n < 0 || this.offset + n > this.bytes.length)
+      throw new Error("Binary payload is truncated");
+  }
+  u8() {
+    this.need(1);
+    return this.bytes[this.offset++];
+  }
+  fixed(n, f) {
+    this.need(n);
+    const v = f(new DataView(this.bytes.buffer, this.bytes.byteOffset + this.offset, n));
+    this.offset += n;
+    return v;
+  }
+  raw(n) {
+    this.need(n);
+    const b = this.bytes.slice(this.offset, this.offset + n);
+    this.offset += n;
+    return b;
+  }
+}
+function make(write, read, fixed, fields) {
+  const s = { size: fixed ?? 0, capabilities: { fixedSize: fixed !== undefined, byteLength: fixed, variableLength: fixed === undefined, zeroCopyReadable: fixed !== undefined, zeroCopyWritable: fixed !== undefined }, encode(view, offset, value) {
+    const b = encodeBytes(s, value);
+    if (b.length !== (fixed ?? b.length))
+      throw new Error("Schema size mismatch");
+    new Uint8Array(view.buffer, view.byteOffset + offset, b.length).set(b);
+  }, decode(view, offset) {
+    return decodeBytes(s, new Uint8Array(view.buffer, view.byteOffset + offset, view.byteLength - offset));
+  }, encodeBytes(value) {
+    const w = new Writer;
+    write(w, value);
+    return w.result();
+  }, decodeBytes(bytes) {
+    const r = new Reader(bytes);
+    const value = read(r);
+    if (r.offset !== bytes.length && fixed === undefined)
+      throw new Error("Trailing schema bytes");
+    return value;
+  }, _write: write, _read: read, _fixed: fixed, _fields: fields };
+  return s;
+}
+function writeSchema(w, s, v) {
+  if (s._write)
+    s._write(w, v);
+  else
+    w.raw(encodeBytes(s, v));
+}
+function readSchema(r, s) {
+  return s._read ? s._read(r) : decodeBytes(s, r.raw(s.size));
+}
+function encodeBytes(s, v) {
+  if (s.encodeBytes)
+    return s.encodeBytes(v);
+  const w = new Writer;
+  s._write(w, v);
+  return w.result();
+}
+function decodeBytes(s, b) {
+  if (s.decodeBytes)
+    return s.decodeBytes(b);
+  return s._read(new Reader(b));
+}
+var binary = {
+  u8: () => make((w, v) => w.u8(v), (r) => r.u8(), 1),
+  u16: () => make((w, v) => w.fixed(2, (d) => d.setUint16(0, v, true)), (r) => r.fixed(2, (d) => d.getUint16(0, true)), 2),
+  u32: () => make((w, v) => w.fixed(4, (d) => d.setUint32(0, v, true)), (r) => r.fixed(4, (d) => d.getUint32(0, true)), 4),
+  i8: () => make((w, v) => w.fixed(1, (d) => d.setInt8(0, v)), (r) => r.fixed(1, (d) => d.getInt8(0)), 1),
+  i16: () => make((w, v) => w.fixed(2, (d) => d.setInt16(0, v, true)), (r) => r.fixed(2, (d) => d.getInt16(0, true)), 2),
+  i32: () => make((w, v) => w.fixed(4, (d) => d.setInt32(0, v, true)), (r) => r.fixed(4, (d) => d.getInt32(0, true)), 4),
+  f32: () => make((w, v) => w.fixed(4, (d) => d.setFloat32(0, v, true)), (r) => r.fixed(4, (d) => d.getFloat32(0, true)), 4),
+  f64: () => make((w, v) => w.fixed(8, (d) => d.setFloat64(0, v, true)), (r) => r.fixed(8, (d) => d.getFloat64(0, true)), 8),
+  bool: () => make((w, v) => w.u8(v ? 1 : 0), (r) => {
+    const v = r.u8();
+    if (v > 1)
+      throw new Error("Invalid boolean");
+    return v === 1;
+  }, 1),
+  varuint: () => make((w, v) => {
+    if (!Number.isSafeInteger(v) || v < 0)
+      throw new Error("Invalid varuint");
+    do {
+      let b = v % 128;
+      v = Math.floor(v / 128);
+      if (v)
+        b |= 128;
+      w.u8(b);
+    } while (v);
+  }, (r) => {
+    let n = 0, shift = 0;
+    for (let i = 0;i < 10; i++) {
+      const b = r.u8();
+      n += (b & 127) * 2 ** shift;
+      if (!(b & 128)) {
+        if (!Number.isSafeInteger(n))
+          throw new Error("Invalid varuint");
+        return n;
+      }
+      shift += 7;
+    }
+    throw new Error("Invalid varuint");
+  }),
+  string: () => {
+    const u = new TextEncoder, t = new TextDecoder;
+    return make((w, v) => {
+      const b = u.encode(v);
+      writeSchema(w, binary.varuint(), b.length);
+      w.raw(b);
+    }, (r) => t.decode(r.raw(readSchema(r, binary.varuint()))));
+  },
+  bytes: (length) => make((w, v) => {
+    if (v.length !== length)
+      throw new Error("Invalid fixed byte length");
+    w.raw(v);
+  }, (r) => r.raw(length), length),
+  fixedArray: (s, length) => make((w, v) => {
+    if (v.length !== length)
+      throw new Error("Invalid fixed array length");
+    for (const x of v)
+      writeSchema(w, s, x);
+  }, (r) => Array.from({ length }, () => readSchema(r, s)), s.capabilities?.fixedSize && s.size ? s.size * length : undefined),
+  array: (s) => make((w, v) => {
+    writeSchema(w, binary.varuint(), v.length);
+    for (const x of v)
+      writeSchema(w, s, x);
+  }, (r) => {
+    const n = readSchema(r, binary.varuint());
+    if (n > 1e6)
+      throw new Error("Invalid array count");
+    return Array.from({ length: n }, () => readSchema(r, s));
+  }),
+  optional: (s) => make((w, v) => {
+    w.u8(v === undefined ? 0 : 1);
+    if (v !== undefined)
+      writeSchema(w, s, v);
+  }, (r) => r.u8() === 0 ? undefined : readSchema(r, s)),
+  struct: (fields) => {
+    const entries = Object.entries(fields);
+    const fixed = entries.every(([, s]) => s.capabilities?.fixedSize) ? entries.reduce((n, [, s]) => n + s.size, 0) : undefined;
+    return make((w, v) => {
+      for (const [k, s] of entries)
+        writeSchema(w, s, v[k]);
+    }, (r) => {
+      const o = {};
+      for (const [k, s] of entries)
+        o[k] = readSchema(r, s);
+      return o;
+    }, fixed, fields);
+  },
+  enumU8: (mapping) => {
+    const reverse = new Map;
+    for (const [k, v] of Object.entries(mapping)) {
+      if (!Number.isInteger(v) || v < 0 || v > 255 || reverse.has(v))
+        throw new Error("Invalid enum mapping");
+      reverse.set(v, k);
+    }
+    return make((w, v) => {
+      const n = mapping[v];
+      if (n === undefined)
+        throw new Error(`Unknown enum value ${v}`);
+      w.u8(n);
+    }, (r) => {
+      const v = r.u8(), name = reverse.get(v);
+      if (name === undefined)
+        throw new Error(`Unknown enum ID ${v}`);
+      return name;
+    }, 1);
+  },
+  taggedUnion: (options) => make((w, v) => {
+    writeSchema(w, options.tag, v.tag);
+    const s = options.variants[v.tag];
+    if (!s)
+      throw new Error(`Unknown union tag ${v.tag}`);
+    writeSchema(w, s, v.value);
+  }, (r) => {
+    const tag = readSchema(r, options.tag);
+    const s = options.variants[tag];
+    if (!s)
+      throw new Error(`Unknown union tag ${tag}`);
+    return { tag, value: readSchema(r, s) };
+  }),
+  lazy: (get) => make((w, v) => writeSchema(w, get(), v), (r) => readSchema(r, get()))
+};
+
+class BinarySchemaRegistry {
+  entries = new Map;
+  sealed = false;
+  register(entry) {
+    if (this.sealed)
+      throw new Error("Binary schema registry is sealed");
+    if (!entry.namespace || !Number.isInteger(entry.typeId) || entry.typeId < 0 || entry.typeId > 65535 || !Number.isInteger(entry.version) || entry.version < 1)
+      throw new Error("Invalid binary schema identity");
+    const key = `${entry.namespace}:${entry.typeId}@${entry.version}`;
+    if (this.entries.has(key))
+      throw new Error(`Duplicate binary schema identity ${key}`);
+    this.entries.set(key, entry);
+    return this;
+  }
+  seal() {
+    this.sealed = true;
+    return this;
+  }
+  get(namespace, typeId, version) {
+    if (version !== undefined)
+      return this.entries.get(`${namespace}:${typeId}@${version}`);
+    const matches = [...this.entries.values()].filter((entry) => entry.namespace === namespace && entry.typeId === typeId).sort((a, b) => b.version - a.version);
+    return matches[0];
+  }
+  entriesSorted() {
+    return [...this.entries.values()].sort((a, b) => a.namespace.localeCompare(b.namespace) || a.typeId - b.typeId || a.version - b.version);
+  }
+}
+function createBinarySchemaRegistry() {
+  return new BinarySchemaRegistry;
+}
+function encodeWithSchema(schema, value) {
+  return encodeBytes(schema, value);
+}
+function decodeWithSchema(schema, bytes) {
+  return decodeBytes(schema, bytes);
+}
+function createBinaryView(schema, bytes, offset = 0, writable = false) {
+  if (!schema.capabilities?.fixedSize || !schema.capabilities.byteLength)
+    throw new Error("Schema does not support fixed binary views");
+  const base = offset;
+  const structSchema = schema;
+  const fields = structSchema._fields;
+  if (!fields)
+    throw new Error("Schema does not expose field views");
+  const fieldOffsets = new Map;
+  let cursor = 0;
+  for (const [name, field] of Object.entries(fields)) {
+    if (!field.capabilities?.fixedSize)
+      throw new Error("Schema field is not fixed-size");
+    fieldOffsets.set(name, cursor);
+    cursor += field.size;
+  }
+  if (base < 0 || base + schema.size > bytes.length)
+    throw new Error("Binary view is out of range");
+  const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { schema, byteOffset: base, byteLength: schema.size, get(name) {
+    const field = fields[name];
+    const at = fieldOffsets.get(name);
+    if (!field || at === undefined)
+      throw new Error(`Unknown binary field ${name}`);
+    return field.decode(data, base + at);
+  }, set(name, value) {
+    if (!writable)
+      throw new Error("Binary view is read-only");
+    const field = fields[name];
+    const at = fieldOffsets.get(name);
+    if (!field || at === undefined)
+      throw new Error(`Unknown binary field ${name}`);
+    field.encode(data, base + at, value);
+  } };
+}
+function schemaIdentity(entry) {
+  return `${entry.namespace}:${entry.typeId}@${entry.version}`;
+}
+
+// src/sdk/binary.ts
+var ROAST_BINARY_PROTOCOL_VERSION = 1;
+var ROAST_BINARY_SCHEMA_VERSION = 1;
+var ROAST_PACKED_SCHEMA_VERSION = 2;
+var ROAST_BINARY_FRAME_TYPE = 1;
+var ROAST_PACKED_FRAME_TYPE = 2;
+var MAGIC = 1414745938;
+var PACKED_MAGIC = 827019346;
+var HEADER_BYTES = 16;
+var PACKED_HEADER_BYTES = 44;
+var ENTITY_RECORD_BYTES = 20;
+var COMPONENT_RECORD_BYTES = 20;
+var COMPONENT_TRANSFORM = 1;
+var COMPONENT_MOVEMENT = 2;
+var COMPONENT_FALLBACK = 65535;
+var COMPONENT_MODE_FIXED = 1;
+var COMPONENT_MODE_REGISTERED = 2;
+var COMPONENT_MODE_FALLBACK = 3;
+var COMPONENT_REGISTERED = 65534;
+var KNOWN_COMPONENT_NAMES = new Map([[COMPONENT_TRANSFORM, "transform.state"], [COMPONENT_MOVEMENT, "movement.state"]]);
+function componentName(typeId, name) {
+  return KNOWN_COMPONENT_NAMES.get(typeId) ?? name;
+}
+var arrayBufferStorage = { allocate(bytes) {
+  return bytes.slice();
+} };
+function createArenaStorage(arena) {
+  return { allocate(bytes) {
+    const location = arena.alloc(bytes);
+    const view = arena.read(location);
+    if (!view)
+      throw new Error("BumpArena allocation could not be read");
+    return view;
+  } };
+}
+var f32 = () => ({ size: 4, encode: (view, offset, value) => view.setFloat32(offset, value, true), decode: (view, offset) => view.getFloat32(offset, true) });
+var f64 = () => ({ size: 8, encode: (view, offset, value) => view.setFloat64(offset, value, true), decode: (view, offset) => view.getFloat64(offset, true) });
+var u8 = () => ({ size: 1, encode: (view, offset, value) => view.setUint8(offset, value), decode: (view, offset) => view.getUint8(offset) });
+var bool = () => ({ size: 1, encode: (view, offset, value) => view.setUint8(offset, value ? 1 : 0), decode: (view, offset) => {
+  const result = view.getUint8(offset);
+  if (result > 1)
+    throw new Error("Invalid boolean value");
+  return result !== 0;
+} });
+function struct(fields) {
+  const entries = Object.entries(fields), size = entries.reduce((total, [, schema]) => total + schema.size, 0);
+  return { size, encode(view, offset, value) {
+    let cursor = offset;
+    for (const [key, schema] of entries) {
+      schema.encode(view, cursor, value[key]);
+      cursor += schema.size;
+    }
+  }, decode(view, offset) {
+    let cursor = offset;
+    const result = {};
+    for (const [key, schema] of entries) {
+      result[key] = schema.decode(view, cursor);
+      cursor += schema.size;
+    }
+    return result;
+  } };
+}
+var transformBinarySchema = struct({ x: f32(), y: f32(), rotation: f32() });
+var movementBinarySchema = struct({ velocityX: f32(), velocityY: f32(), angularVelocity: f32(), enabled: bool() });
+function encodeSchema(value, schema, storage = arrayBufferStorage) {
+  const bytes = new Uint8Array(schema.size);
+  schema.encode(new DataView(bytes.buffer), 0, value);
+  return storage.allocate(bytes);
+}
+function decodeSchema(bytes, schema) {
+  if (bytes.byteLength < schema.size)
+    throw new Error("Binary schema payload is truncated");
+  return schema.decode(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), 0);
+}
+function encodeFrameWithSchema(payload, frameType, schemaVersion) {
+  const bytes = new Uint8Array(HEADER_BYTES + payload.byteLength);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, MAGIC, true);
+  view.setUint16(4, ROAST_BINARY_PROTOCOL_VERSION, true);
+  view.setUint16(6, schemaVersion, true);
+  view.setUint8(8, frameType);
+  view.setUint32(10, payload.byteLength, true);
+  view.setUint16(14, 0, true);
+  bytes.set(payload, HEADER_BYTES);
+  return bytes;
+}
+function encodeFrame(payload, frameType = ROAST_BINARY_FRAME_TYPE) {
+  return encodeFrameWithSchema(payload, frameType, ROAST_BINARY_SCHEMA_VERSION);
+}
+function decodeFrame(bytes) {
+  if (bytes.byteLength < HEADER_BYTES)
+    throw new Error("Binary frame is truncated");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint32(0, true) !== MAGIC)
+    throw new Error("Invalid Roast binary magic");
+  const protocolVersion = view.getUint16(4, true), schemaVersion = view.getUint16(6, true), frameType = view.getUint8(8), length = view.getUint32(10, true);
+  if (protocolVersion !== ROAST_BINARY_PROTOCOL_VERSION)
+    throw new Error(`Unsupported Roast binary protocol version ${protocolVersion}`);
+  if (schemaVersion !== ROAST_BINARY_SCHEMA_VERSION && schemaVersion !== ROAST_PACKED_SCHEMA_VERSION)
+    throw new Error(`Unsupported Roast binary schema version ${schemaVersion}`);
+  if (length !== bytes.byteLength - HEADER_BYTES)
+    throw new Error("Invalid binary frame payload length");
+  return { protocolVersion, schemaVersion, frameType, payload: bytes.subarray(HEADER_BYTES) };
+}
+function canonicalJson(value) {
+  if (Array.isArray(value))
+    return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object")
+    return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+function jsonBytes(value) {
+  return new TextEncoder().encode(canonicalJson(value));
+}
+function encodeSettings(settings) {
+  return encodeFrame(jsonBytes(settings));
+}
+function decodeSettings(bytes) {
+  const frame = decodeFrame(bytes);
+  if (frame.frameType !== ROAST_BINARY_FRAME_TYPE || frame.schemaVersion !== ROAST_BINARY_SCHEMA_VERSION)
+    throw new Error("Not a JSON-backed Roast binary frame");
+  try {
+    return JSON.parse(new TextDecoder().decode(frame.payload));
+  } catch {
+    throw new Error("Invalid Roast binary JSON payload");
+  }
+}
+function checkedRange(view, offset, length, label) {
+  if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || offset + length > view.byteLength)
+    throw new Error(`Invalid ${label} range`);
+}
+function text(value) {
+  return new TextEncoder().encode(value);
+}
+function readText(bytes) {
+  return new TextDecoder().decode(bytes);
+}
+function byteSlice(data, offset, length) {
+  checkedRange(data, offset, length, "byte slice");
+  return new Uint8Array(data.buffer, data.byteOffset + offset, length);
+}
+function concat(chunks) {
+  const result = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function schemaEncode(schema, value) {
+  if (schema.encodeBytes)
+    return schema.encodeBytes(value);
+  const bytes = new Uint8Array(schema.size);
+  schema.encode(new DataView(bytes.buffer), 0, value);
+  return bytes;
+}
+function schemaDecode(schema, bytes) {
+  if (schema.decodeBytes)
+    return schema.decodeBytes(bytes);
+  return schema.decode(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), 0);
+}
+function identityKey(identity) {
+  return `${identity.namespace}:${identity.typeId}@${identity.version}`;
+}
+function registeredEnvelope(identity, namespaceRef, payload) {
+  const out = new Uint8Array(12 + payload.length);
+  const v = new DataView(out.buffer);
+  v.setUint32(0, namespaceRef, true);
+  v.setUint16(4, identity.typeId, true);
+  v.setUint16(6, identity.version, true);
+  v.setUint32(8, payload.length, true);
+  out.set(payload, 12);
+  return out;
+}
+function readRegisteredEnvelope(bytes) {
+  if (bytes.length < 12)
+    throw new Error("Registered payload is truncated");
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), length = v.getUint32(8, true);
+  if (length !== bytes.length - 12)
+    throw new Error("Invalid registered payload length");
+  return { namespaceRef: v.getUint32(0, true), typeId: v.getUint16(4, true), version: v.getUint16(6, true), payload: bytes.subarray(12) };
+}
+function componentBytes(name, value, options) {
+  const identity = options.components?.[name];
+  if (identity) {
+    if (!options.registry)
+      throw new Error(`Registry required for ${name}`);
+    const entry = options.registry.get(identity.namespace, identity.typeId, identity.version);
+    if (!entry)
+      throw new Error(`Missing binary schema ${identity.namespace}:${identity.typeId}@${identity.version}`);
+    return { typeId: COMPONENT_REGISTERED, schemaVersion: identity.version, mode: COMPONENT_MODE_REGISTERED, identity, bytes: schemaEncode(entry.schema, value) };
+  }
+  if (name === "transform.state" && isRecord2(value) && isRecord2(value.position))
+    return { typeId: COMPONENT_TRANSFORM, schemaVersion: 1, mode: COMPONENT_MODE_FIXED, bytes: encodeSchema({ x: value.position.x, y: value.position.y, rotation: value.rotation }, transformBinarySchema) };
+  if (name === "movement.state" && isRecord2(value) && isRecord2(value.velocity))
+    return { typeId: COMPONENT_MOVEMENT, schemaVersion: 1, mode: COMPONENT_MODE_FIXED, bytes: encodeSchema({ velocityX: value.velocity.x, velocityY: value.velocity.y, angularVelocity: value.angularVelocity, enabled: value.enabled }, movementBinarySchema) };
+  return { typeId: COMPONENT_FALLBACK, schemaVersion: 1, mode: COMPONENT_MODE_FALLBACK, bytes: jsonBytes(value) };
+}
+function decodeComponent(name, typeId, mode, bytes, strings, registry) {
+  if (mode === COMPONENT_MODE_REGISTERED) {
+    if (!registry)
+      throw new Error("Missing binary schema registry");
+    const envelope = readRegisteredEnvelope(bytes), namespace = strings[envelope.namespaceRef];
+    if (!namespace)
+      throw new Error("Invalid registered namespace reference");
+    const entry = registry.get(namespace, envelope.typeId, envelope.version);
+    if (!entry)
+      throw new Error(`Missing binary schema ${namespace}:${envelope.typeId}@${envelope.version}`);
+    return schemaDecode(entry.schema, envelope.payload);
+  }
+  if (mode === COMPONENT_MODE_FIXED && typeId === COMPONENT_TRANSFORM && name === "transform.state") {
+    const value = decodeSchema(bytes, transformBinarySchema);
+    return { schemaVersion: 1, position: { x: value.x, y: value.y }, rotation: value.rotation };
+  }
+  if (mode === COMPONENT_MODE_FIXED && typeId === COMPONENT_MOVEMENT && name === "movement.state") {
+    const value = decodeSchema(bytes, movementBinarySchema);
+    return { schemaVersion: 1, velocity: { x: value.velocityX, y: value.velocityY }, angularVelocity: value.angularVelocity, enabled: value.enabled };
+  }
+  if (mode !== COMPONENT_MODE_FALLBACK)
+    throw new Error(`Unsupported packed component ${typeId}`);
+  try {
+    return JSON.parse(readText(bytes));
+  } catch {
+    throw new Error("Malformed packed fallback component");
+  }
+}
+function encodePackedSnapshot(settings, storageOrOptions = arrayBufferStorage, maybeOptions) {
+  const storage = "allocate" in storageOrOptions ? storageOrOptions : arrayBufferStorage;
+  const options = "allocate" in storageOrOptions ? maybeOptions ?? {} : storageOrOptions;
+  const root = structuredClone({ ...settings, entities: undefined });
+  delete root.entities;
+  const sections = [...options.sections ?? []].sort((a, b) => a.key.localeCompare(b.key));
+  const claimed = sections.map((section) => section.path);
+  for (let i = 0;i < claimed.length; i++)
+    for (let j = i + 1;j < claimed.length; j++) {
+      const a = claimed[i], b = claimed[j];
+      if (a.length === b.length && a.every((v, n) => v === b[n]))
+        throw new Error(`Duplicate typed section path ${sections[i].key}`);
+      if (a.every((v, n) => v === b[n]))
+        throw new Error(`Overlapping typed section paths ${sections[i].key}/${sections[j].key}`);
+    }
+  for (const section of sections) {
+    if (!section.path.length)
+      throw new Error("Typed section path cannot be empty");
+    let cursor = root;
+    for (let i = 0;i < section.path.length - 1; i++) {
+      if (!isRecord2(cursor[section.path[i]]))
+        throw new Error(`Invalid typed section parent ${section.key}`);
+      cursor = cursor[section.path[i]];
+    }
+    delete cursor[section.path[section.path.length - 1]];
+  }
+  const sourceEntities = settings.entities.map((entity) => {
+    const components = Object.keys(entity).filter((key) => key !== "id" && key !== "capabilities").sort().map((name) => ({ name, ...componentBytes(name, entity[name], options) }));
+    return { id: String(entity.id), capabilities: [...entity.capabilities ?? []].map(String).sort(), components };
+  }).sort((a, b) => a.id.localeCompare(b.id));
+  const strings = [];
+  const stringIds = new Map;
+  const stringId = (value) => {
+    let id = stringIds.get(value);
+    if (id === undefined) {
+      id = strings.length;
+      strings.push(value);
+      stringIds.set(value, id);
+    }
+    return id;
+  };
+  for (const entity of sourceEntities) {
+    stringId(entity.id);
+    for (const capability of entity.capabilities)
+      if (capability !== "transform.state" && capability !== "movement.state")
+        stringId(capability);
+    for (const component of entity.components) {
+      if (component.mode === COMPONENT_MODE_FALLBACK || component.mode === COMPONENT_MODE_REGISTERED)
+        stringId(component.name);
+      if (component.identity)
+        stringId(component.identity.namespace);
+    }
+  }
+  const sectionValues = [];
+  for (const section of sections) {
+    if (!options.registry)
+      throw new Error("Registry required for typed sections");
+    const entry = options.registry.get(section.schema.namespace, section.schema.typeId, section.schema.version);
+    if (!entry)
+      throw new Error(`Missing binary schema ${section.schema.namespace}:${section.schema.typeId}@${section.schema.version}`);
+    sectionValues.push({ section, payload: registeredEnvelope(section.schema, stringId(section.schema.namespace), schemaEncode(entry.schema, section.value)) });
+  }
+  const componentRecords = [];
+  const entityRecords = [];
+  const dataChunks = [];
+  let dataLength = 0;
+  const addData = (bytes) => {
+    const offset = dataLength;
+    dataChunks.push(bytes);
+    dataLength += bytes.byteLength;
+    return offset;
+  };
+  for (const entity of sourceEntities) {
+    const capBytes = new Uint8Array(entity.capabilities.length * 4);
+    const capView = new DataView(capBytes.buffer);
+    entity.capabilities.forEach((capability, index) => {
+      const ref = capability === "transform.state" ? (2147483648 | COMPONENT_TRANSFORM) >>> 0 : capability === "movement.state" ? (2147483648 | COMPONENT_MOVEMENT) >>> 0 : stringIds.get(capability);
+      if (ref === undefined)
+        throw new Error(`Missing capability string ${capability}`);
+      capView.setUint32(index * 4, ref >>> 0, true);
+    });
+    const capOffset = addData(capBytes);
+    const componentStart = componentRecords.length;
+    for (const component of entity.components)
+      componentRecords.push({ nameIndex: component.mode === COMPONENT_MODE_FALLBACK || component.mode === COMPONENT_MODE_REGISTERED ? stringId(component.name) : 0, typeId: component.typeId, schemaVersion: component.schemaVersion, mode: component.mode, bytes: component.identity ? registeredEnvelope(component.identity, stringId(component.identity.namespace), component.bytes) : component.bytes, offset: addData(component.identity ? registeredEnvelope(component.identity, stringId(component.identity.namespace), component.bytes) : component.bytes) });
+    entityRecords.push({ idIndex: stringId(entity.id), capabilities: entity.capabilities.map((capability) => capability === "transform.state" ? (2147483648 | COMPONENT_TRANSFORM) >>> 0 : capability === "movement.state" ? (2147483648 | COMPONENT_MOVEMENT) >>> 0 : strings.indexOf(capability)), componentStart, componentCount: entity.components.length, capOffset });
+  }
+  for (const item of sectionValues) {
+    const offset = addData(item.payload);
+    (root.__roastTypedSections ??= []).push({ key: item.section.key, path: item.section.path, namespace: item.section.schema.namespace, typeId: item.section.schema.typeId, version: item.section.schema.version, offset, length: item.payload.length });
+  }
+  const metadata = jsonBytes(root);
+  const metadataOffset = addData(metadata);
+  const metadataLength = metadata.byteLength;
+  const entityTableOffset = PACKED_HEADER_BYTES;
+  const componentTableOffset = entityTableOffset + entityRecords.length * ENTITY_RECORD_BYTES;
+  const dataOffset = componentTableOffset + componentRecords.length * COMPONENT_RECORD_BYTES;
+  const stringOffset = dataOffset + dataLength;
+  const stringChunks = [new Uint8Array(4)];
+  new DataView(stringChunks[0].buffer).setUint32(0, strings.length, true);
+  for (const value of strings) {
+    const bytes = text(value), header = new Uint8Array(4);
+    new DataView(header.buffer).setUint32(0, bytes.byteLength, true);
+    stringChunks.push(header, bytes);
+  }
+  const stringBytes = concat(stringChunks);
+  const payload = new Uint8Array(stringOffset + stringBytes.byteLength);
+  const view = new DataView(payload.buffer);
+  view.setUint32(0, PACKED_MAGIC, true);
+  view.setUint16(4, 1, true);
+  view.setUint16(6, 0, true);
+  view.setUint32(8, entityRecords.length, true);
+  view.setUint32(12, entityTableOffset, true);
+  view.setUint32(16, componentTableOffset, true);
+  view.setUint32(20, dataOffset, true);
+  view.setUint32(24, dataLength, true);
+  view.setUint32(28, stringOffset, true);
+  view.setUint32(32, stringBytes.byteLength, true);
+  view.setUint32(36, dataOffset + metadataOffset, true);
+  view.setUint32(40, metadataLength, true);
+  for (const chunk of dataChunks)
+    payload.set(chunk, dataOffset + dataChunks.slice(0, dataChunks.indexOf(chunk)).reduce((n, item) => n + item.byteLength, 0));
+  entityRecords.forEach((entity, index) => {
+    const offset = entityTableOffset + index * ENTITY_RECORD_BYTES;
+    view.setUint32(offset, entity.idIndex, true);
+    view.setUint32(offset + 4, dataOffset + entity.capOffset, true);
+    view.setUint16(offset + 8, entity.capabilities.length, true);
+    view.setUint32(offset + 10, entity.componentStart, true);
+    view.setUint16(offset + 14, entity.componentCount, true);
+    view.setUint16(offset + 16, 0, true);
+    view.setUint16(offset + 18, 0, true);
+  });
+  componentRecords.forEach((component, index) => {
+    const offset = componentTableOffset + index * COMPONENT_RECORD_BYTES;
+    view.setUint32(offset, component.nameIndex, true);
+    view.setUint16(offset + 4, component.typeId, true);
+    view.setUint16(offset + 6, component.schemaVersion, true);
+    view.setUint8(offset + 8, component.mode);
+    view.setUint8(offset + 9, 0);
+    view.setUint32(offset + 10, dataOffset + component.offset, true);
+    view.setUint32(offset + 14, component.bytes.byteLength, true);
+    view.setUint32(offset + 18, 0, true);
+  });
+  payload.set(stringBytes, stringOffset);
+  return storage.allocate(encodeFrameWithSchema(payload, ROAST_PACKED_FRAME_TYPE, ROAST_PACKED_SCHEMA_VERSION));
+}
+function readStrings(view, offset, length) {
+  checkedRange(view, offset, length, "string table");
+  const end = offset + length;
+  if (length < 4)
+    throw new Error("Truncated packed string table");
+  const count = view.getUint32(offset, true);
+  let cursor = offset + 4;
+  const result = [];
+  for (let i = 0;i < count; i += 1) {
+    checkedRange(view, cursor, 4, "string length");
+    const size = view.getUint32(cursor, true);
+    cursor += 4;
+    checkedRange(view, cursor, size, "string");
+    result.push(readText(new Uint8Array(view.buffer, view.byteOffset + cursor, size)));
+    cursor += size;
+  }
+  if (cursor !== end)
+    throw new Error("Packed string table has trailing bytes");
+  return result;
+}
+function encodePackedSnapshotWithDiagnostics(settings, options = {}) {
+  const bytes = encodePackedSnapshot(settings, options);
+  const frame = decodeFrame(bytes);
+  const payload = frame.payload;
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const entityCount = view.getUint32(8, true), entityTableBytes = entityCount * ENTITY_RECORD_BYTES;
+  const componentOffset = view.getUint32(16, true), dataOffset = view.getUint32(20, true), dataLength = view.getUint32(24, true), stringOffset = view.getUint32(28, true), stringBytes = view.getUint32(32, true), metadataOffset = view.getUint32(36, true), metadataLength = view.getUint32(40, true);
+  const componentRecordBytes = Math.max(0, dataOffset - componentOffset);
+  const metadata = JSON.parse(readText(byteSlice(view, metadataOffset, metadataLength)));
+  const descriptors = metadata.__roastTypedSections ?? [];
+  const descriptorBytes = descriptors.length ? metadataLength - jsonBytes({ ...metadata, __roastTypedSections: undefined }).byteLength : 0;
+  const schemaMap = new Map;
+  const sectionsDiagnostics = [];
+  let registeredComponentBytes = 0, registeredEnvelopeOverheadBytes = 0, fallbackComponentBytes = 0, builtInPackedPayloadBytes = 0, typedSectionPayloadBytes = 0;
+  const addSchema = (identity, payloadBytes, envelopeBytes) => {
+    const key = identityKey(identity);
+    const existing = schemaMap.get(key);
+    const entry = options.registry?.get(identity.namespace, identity.typeId, identity.version);
+    if (existing) {
+      existing.count += 1;
+      existing.payloadBytes += payloadBytes;
+      existing.recordBytes += envelopeBytes;
+    } else
+      schemaMap.set(key, { identity: key, name: entry?.name, count: 1, payloadBytes, recordBytes: envelopeBytes });
+  };
+  const componentCount = view.getUint32(8, true);
+  const componentTableStart = componentOffset + componentCount * ENTITY_RECORD_BYTES;
+  const totalComponents = componentRecordBytes / COMPONENT_RECORD_BYTES;
+  for (let i = 0;i < totalComponents; i++) {
+    const at = componentTableStart + i * COMPONENT_RECORD_BYTES;
+    const mode = view.getUint8(at + 8), length = view.getUint32(at + 14, true);
+    if (mode === COMPONENT_MODE_REGISTERED) {
+      const payload2 = byteSlice(view, view.getUint32(at + 10, true), length), envelope = readRegisteredEnvelope(payload2);
+      const namespace = readStrings(view, stringOffset, stringBytes)[envelope.namespaceRef];
+      if (!namespace)
+        throw new Error("Invalid registered namespace reference");
+      const identity = { namespace, typeId: envelope.typeId, version: envelope.version };
+      addSchema(identity, envelope.payload.length, 12);
+      registeredComponentBytes += envelope.payload.length;
+      registeredEnvelopeOverheadBytes += 12;
+    } else if (mode === COMPONENT_MODE_FALLBACK)
+      fallbackComponentBytes += length;
+    else
+      builtInPackedPayloadBytes += length;
+  }
+  for (const descriptor of descriptors) {
+    const envelope = readRegisteredEnvelope(byteSlice(view, dataOffset + descriptor.offset, descriptor.length));
+    const identity = { namespace: descriptor.namespace, typeId: descriptor.typeId, version: descriptor.version };
+    const payloadBytes = envelope.payload.length;
+    addSchema(identity, payloadBytes, 12);
+    typedSectionPayloadBytes += payloadBytes;
+    registeredEnvelopeOverheadBytes += 12;
+    sectionsDiagnostics.push({ key: descriptor.key, path: descriptor.path, identity: identityKey(identity), payloadBytes, overheadBytes: descriptorBytes });
+  }
+  const fallbackRootBytes = jsonBytes({ ...metadata, __roastTypedSections: undefined }).byteLength;
+  const fallbackJsonBytes = fallbackRootBytes + fallbackComponentBytes;
+  builtInPackedPayloadBytes = Math.max(0, dataLength - registeredComponentBytes - typedSectionPayloadBytes - registeredEnvelopeOverheadBytes - fallbackJsonBytes);
+  const attributed = HEADER_BYTES + PACKED_HEADER_BYTES + entityTableBytes + componentRecordBytes + stringBytes + builtInPackedPayloadBytes + registeredComponentBytes + typedSectionPayloadBytes + registeredEnvelopeOverheadBytes + fallbackJsonBytes;
+  const residualBytes = Math.max(0, bytes.byteLength - attributed);
+  const accountedFallbackBytes = fallbackJsonBytes + residualBytes;
+  const metadataRegionBytes = metadataLength;
+  const dataRegionBytes = dataLength - metadataLength;
+  const physical = { outerFrameHeaderBytes: HEADER_BYTES, packedHeaderBytes: PACKED_HEADER_BYTES, entityTableBytes, componentTableBytes: componentRecordBytes, stringTableBytes: stringBytes, metadataRegionBytes, dataRegionBytes, unattributedBytes: 0 };
+  const diagnostics = { frameBytes: bytes.byteLength, outerFrameHeaderBytes: HEADER_BYTES, outerHeaderBytes: HEADER_BYTES, packedHeaderBytes: PACKED_HEADER_BYTES, entityTableBytes, componentRecordBytes, stringTableBytes: stringBytes, tableBytes: stringBytes, metadataRegionBytes, dataRegionBytes, typedSectionDescriptorBytes: descriptorBytes, builtInBytes: builtInPackedPayloadBytes, builtInPackedPayloadBytes, registeredComponentBytes, registeredComponentPayloadBytes: registeredComponentBytes, typedSectionBytes: typedSectionPayloadBytes, typedSectionPayloadBytes, fallbackBytes: accountedFallbackBytes, fallbackJsonBytes, fallbackPercentage: bytes.byteLength ? accountedFallbackBytes / bytes.byteLength * 100 : 0, fallbackCount: settings.entities.reduce((n, entity) => n + Object.keys(entity).filter((key) => key !== "id" && key !== "capabilities" && !options.components?.[key] && key !== "transform.state" && key !== "movement.state").length, 0), namespaceTableBytes: stringBytes, registeredEnvelopeOverheadBytes, unattributedBytes: 0, physical, logical: { fallbackJsonBytes, builtInPackedPayloadBytes, registeredComponentPayloadBytes: registeredComponentBytes, typedSectionPayloadBytes, registeredEnvelopeOverheadBytes, typedSectionDescriptorBytes: descriptorBytes }, schemas: [...schemaMap.values()], sections: sectionsDiagnostics };
+  return { bytes, diagnostics };
+}
+function decodePackedSnapshot(bytes, options = {}) {
+  const frame = decodeFrame(bytes);
+  if (frame.frameType !== ROAST_PACKED_FRAME_TYPE || frame.schemaVersion !== ROAST_PACKED_SCHEMA_VERSION)
+    throw new Error("Not a packed Roast snapshot");
+  const view = new PackedSnapshotView(frame.payload, options.registry);
+  return { settings: view.toSettings(), view };
+}
+
+class PackedSnapshotView {
+  bytes;
+  data;
+  strings;
+  entityOffset;
+  componentOffset;
+  entityCount;
+  registry;
+  dataOffset;
+  metadataOffset;
+  metadataLength;
+  constructor(payload, registry) {
+    this.registry = registry;
+    this.bytes = payload;
+    this.data = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+    if (payload.byteLength < PACKED_HEADER_BYTES || this.data.getUint32(0, true) !== PACKED_MAGIC || this.data.getUint16(4, true) !== 1)
+      throw new Error("Invalid packed Roast payload");
+    this.entityCount = this.data.getUint32(8, true);
+    this.entityOffset = this.data.getUint32(12, true);
+    this.componentOffset = this.data.getUint32(16, true);
+    const dataOffset = this.data.getUint32(20, true), dataLength = this.data.getUint32(24, true), stringOffset = this.data.getUint32(28, true), stringLength = this.data.getUint32(32, true), metadataOffset = this.data.getUint32(36, true), metadataLength = this.data.getUint32(40, true);
+    checkedRange(this.data, metadataOffset, metadataLength, "packed metadata");
+    checkedRange(this.data, this.entityOffset, this.entityCount * ENTITY_RECORD_BYTES, "entity table");
+    checkedRange(this.data, this.componentOffset, Math.max(0, stringOffset - this.componentOffset), "component table");
+    checkedRange(this.data, dataOffset, dataLength, "packed data");
+    this.dataOffset = dataOffset;
+    this.metadataOffset = metadataOffset;
+    this.metadataLength = metadataLength;
+    this.strings = readStrings(this.data, stringOffset, stringLength);
+  }
+  getEntity(id) {
+    for (let i = 0;i < this.entityCount; i += 1) {
+      const offset = this.entityOffset + i * ENTITY_RECORD_BYTES;
+      if (this.strings[this.data.getUint32(offset, true)] === id)
+        return new PackedEntityView(this.data, this.strings, offset, this.componentOffset, this.registry);
+    }
+    return;
+  }
+  getEntities() {
+    const result = [];
+    for (let i = 0;i < this.entityCount; i += 1)
+      result.push(new PackedEntityView(this.data, this.strings, this.entityOffset + i * ENTITY_RECORD_BYTES, this.componentOffset, this.registry));
+    return result;
+  }
+  getTypedSection(key) {
+    const metadata = this.metadataObject();
+    const descriptor = metadata.__roastTypedSections?.find((section) => section.key === key);
+    if (!descriptor)
+      return;
+    if (!this.registry)
+      throw new Error("Missing binary schema registry");
+    const entry = this.registry.get(descriptor.namespace, descriptor.typeId, descriptor.version);
+    if (!entry)
+      throw new Error(`Missing binary schema ${descriptor.namespace}:${descriptor.typeId}@${descriptor.version}`);
+    const start = this.dataOffset + descriptor.offset + 12;
+    checkedRange(this.data, start, descriptor.length - 12, "typed section payload");
+    if (!entry.schema.capabilities?.fixedSize)
+      throw new Error("Typed section schema does not support fixed views");
+    return createBinaryView(entry.schema, this.bytes, start, false);
+  }
+  metadataObject() {
+    checkedRange(this.data, this.metadataOffset, this.metadataLength, "packed metadata");
+    return JSON.parse(readText(byteSlice(this.data, this.metadataOffset, this.metadataLength)));
+  }
+  toSettings() {
+    const metadata = this.metadataObject();
+    const sections = metadata.__roastTypedSections;
+    delete metadata.__roastTypedSections;
+    for (const descriptor of sections ?? []) {
+      if (!this.registry)
+        throw new Error("Missing binary schema registry");
+      const entry = this.registry.get(descriptor.namespace, descriptor.typeId, descriptor.version);
+      if (!entry)
+        throw new Error(`Missing binary schema ${descriptor.namespace}:${descriptor.typeId}@${descriptor.version}`);
+      const start = this.dataOffset + descriptor.offset + 12;
+      checkedRange(this.data, start, descriptor.length - 12, "typed section payload");
+      const value = schemaDecode(entry.schema, byteSlice(this.data, start, descriptor.length - 12));
+      let cursor = metadata;
+      for (let i = 0;i < descriptor.path.length - 1; i++) {
+        if (cursor[descriptor.path[i]] !== undefined && !isRecord2(cursor[descriptor.path[i]]))
+          throw new Error("Invalid typed section reconstruction parent");
+        cursor = cursor[descriptor.path[i]] ?? (cursor[descriptor.path[i]] = {});
+      }
+      cursor[descriptor.path[descriptor.path.length - 1]] = value;
+    }
+    return { ...metadata, entities: this.getEntities().map((entity) => entity.toSettings()) };
+  }
+}
+
+class PackedEntityView {
+  data;
+  bytes;
+  strings;
+  offset;
+  componentBase;
+  registry;
+  constructor(data, strings, offset, componentBase, registry) {
+    this.data = data;
+    this.bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    this.strings = strings;
+    this.offset = offset;
+    this.componentBase = componentBase;
+    this.registry = registry;
+  }
+  get id() {
+    return this.strings[this.data.getUint32(this.offset, true)];
+  }
+  get capabilities() {
+    const start = this.data.getUint32(this.offset + 10, true), count = this.data.getUint16(this.offset + 14, true);
+    const names = [];
+    for (let i = 0;i < count; i += 1) {
+      const record = this.componentBase + (start + i) * COMPONENT_RECORD_BYTES;
+      names.push(componentName(this.data.getUint16(record + 4, true), this.strings[this.data.getUint32(record, true)] ?? ""));
+    }
+    return names.sort();
+  }
+  getComponent(name) {
+    const start = this.data.getUint32(this.offset + 10, true), count = this.data.getUint16(this.offset + 14, true);
+    for (let i = 0;i < count; i += 1) {
+      const record = this.componentBase + (start + i) * COMPONENT_RECORD_BYTES;
+      if (componentName(this.data.getUint16(record + 4, true), this.strings[this.data.getUint32(record, true)] ?? "") !== name)
+        continue;
+      const typeId = this.data.getUint16(record + 4, true), payload = this.data.getUint32(record + 10, true), length = this.data.getUint32(record + 14, true);
+      checkedRange(this.data, payload, length, "component payload");
+      if (typeId === COMPONENT_TRANSFORM)
+        return new PackedTransformView(this.data, payload, false);
+      if (typeId === COMPONENT_MOVEMENT)
+        return new PackedMovementView(this.data, payload, false);
+    }
+    return;
+  }
+  getRegisteredComponent(name, writable = false) {
+    const start = this.data.getUint32(this.offset + 10, true), count = this.data.getUint16(this.offset + 14, true);
+    for (let i = 0;i < count; i++) {
+      const record = this.componentBase + (start + i) * COMPONENT_RECORD_BYTES;
+      const typeId = this.data.getUint16(record + 4, true), mode = this.data.getUint8(record + 8), componentNameValue = this.strings[this.data.getUint32(record, true)] ?? "";
+      if (mode !== COMPONENT_MODE_REGISTERED || componentNameValue !== name)
+        continue;
+      const payload = this.data.getUint32(record + 10, true), length = this.data.getUint32(record + 14, true);
+      const envelope = readRegisteredEnvelope(byteSlice(this.data, payload, length));
+      if (!this.registry)
+        throw new Error("Missing binary schema registry");
+      const namespace = this.strings[envelope.namespaceRef];
+      if (!namespace)
+        throw new Error("Invalid registered namespace reference");
+      const entry = this.registry.get(namespace, envelope.typeId, envelope.version);
+      if (!entry)
+        throw new Error(`Missing binary schema ${namespace}:${envelope.typeId}@${envelope.version}`);
+      return createBinaryView(entry.schema, this.bytes, payload + 12, writable);
+    }
+    return;
+  }
+  componentRanges() {
+    const start = this.data.getUint32(this.offset + 10, true), count = this.data.getUint16(this.offset + 14, true);
+    return Array.from({ length: count }, (_, i) => {
+      const record = this.componentBase + (start + i) * COMPONENT_RECORD_BYTES;
+      return { offset: this.data.getUint32(record + 10, true), length: this.data.getUint32(record + 14, true) };
+    });
+  }
+  toSettings() {
+    const result = { id: this.id, capabilities: this.capabilities };
+    const start = this.data.getUint32(this.offset + 10, true), count = this.data.getUint16(this.offset + 14, true);
+    for (let i = 0;i < count; i += 1) {
+      const record = this.componentBase + (start + i) * COMPONENT_RECORD_BYTES;
+      const typeId = this.data.getUint16(record + 4, true), name = componentName(typeId, this.strings[this.data.getUint32(record, true)] ?? ""), mode = this.data.getUint8(record + 8), payload = this.data.getUint32(record + 10, true), length = this.data.getUint32(record + 14, true);
+      checkedRange(this.data, payload, length, "component payload");
+      result[name] = decodeComponent(name, typeId, mode, byteSlice(this.data, payload, length), this.strings, this.registry);
+    }
+    return result;
+  }
+}
+
+class PackedTransformView {
+  data;
+  offset;
+  readOnly;
+  constructor(data, offset, readOnly = true) {
+    this.data = data;
+    this.offset = offset;
+    this.readOnly = readOnly;
+  }
+  set(offset, value) {
+    if (this.readOnly)
+      throw new Error("Packed view is read-only");
+    this.data.setFloat32(this.offset + offset, value, true);
+  }
+  get x() {
+    return this.data.getFloat32(this.offset, true);
+  }
+  set x(value) {
+    this.set(0, value);
+  }
+  get y() {
+    return this.data.getFloat32(this.offset + 4, true);
+  }
+  set y(value) {
+    this.set(4, value);
+  }
+  get rotation() {
+    return this.data.getFloat32(this.offset + 8, true);
+  }
+  set rotation(value) {
+    this.set(8, value);
+  }
+  toSettings() {
+    return { schemaVersion: 1, position: { x: this.x, y: this.y }, rotation: this.rotation };
+  }
+}
+
+class PackedMovementView {
+  data;
+  offset;
+  readOnly;
+  constructor(data, offset, readOnly = true) {
+    this.data = data;
+    this.offset = offset;
+    this.readOnly = readOnly;
+  }
+  get velocityX() {
+    return this.data.getFloat32(this.offset, true);
+  }
+  get velocityY() {
+    return this.data.getFloat32(this.offset + 4, true);
+  }
+  get angularVelocity() {
+    return this.data.getFloat32(this.offset + 8, true);
+  }
+  get enabled() {
+    return this.data.getUint8(this.offset + 12) !== 0;
+  }
+  toSettings() {
+    return { schemaVersion: 1, velocity: { x: this.velocityX, y: this.velocityY }, angularVelocity: this.angularVelocity, enabled: this.enabled };
+  }
+}
+
+class BinaryBackedTransform {
+  bytes;
+  view;
+  constructor(value, storage = arrayBufferStorage) {
+    this.bytes = encodeSchema({ x: value.position.x, y: value.position.y, rotation: value.rotation }, transformBinarySchema, storage);
+    this.view = new DataView(this.bytes.buffer, this.bytes.byteOffset, this.bytes.byteLength);
+  }
+  get x() {
+    return this.view.getFloat32(0, true);
+  }
+  set x(value) {
+    this.view.setFloat32(0, value, true);
+  }
+  get y() {
+    return this.view.getFloat32(4, true);
+  }
+  set y(value) {
+    this.view.setFloat32(4, value, true);
+  }
+  get rotation() {
+    return this.view.getFloat32(8, true);
+  }
+  set rotation(value) {
+    this.view.setFloat32(8, value, true);
+  }
+  toSettings() {
+    return { schemaVersion: 1, position: { x: this.x, y: this.y }, rotation: this.rotation };
+  }
+  toBinary() {
+    return this.bytes;
+  }
+}
+function binaryBackedTransform(value, storage) {
+  return new BinaryBackedTransform(value, storage);
+}
+function binarySnapshot(settings, storage = arrayBufferStorage) {
+  return storage.allocate(encodeSettings(settings));
+}
+function restoreBinarySnapshot(bytes, options = {}) {
+  const frame = decodeFrame(bytes);
+  if (frame.frameType === ROAST_PACKED_FRAME_TYPE)
+    return decodePackedSnapshot(bytes, options).settings;
+  return decodeSettings(bytes);
+}
+function packedSnapshot(settings, storage = arrayBufferStorage, options) {
+  return encodePackedSnapshot(settings, storage, options);
+}
+
 // src/sdk/runtime.ts
 class RuntimeEntity {
   id;
   capabilities;
   components;
   constructor(value) {
-    if (!isRecord2(value) || typeof value.id !== "string" || !Array.isArray(value.capabilities)) {
+    if (!isRecord3(value) || typeof value.id !== "string" || !Array.isArray(value.capabilities)) {
       throw new Error("Runtime entities require an id and capabilities");
     }
     this.id = value.id;
@@ -281,8 +1323,15 @@ class EngineRuntime {
   snapshot() {
     return this.toSettings();
   }
+  snapshotBinary(storageOrOptions) {
+    const options = storageOrOptions && "allocate" in storageOrOptions ? { format: "json", storage: storageOrOptions } : storageOrOptions ?? {};
+    return options.format === "packed" ? packedSnapshot(this.toSettings(), options.storage, options) : binarySnapshot(this.toSettings(), options.storage);
+  }
   static restore(settings, registry) {
     return new EngineRuntime(settings, registry);
+  }
+  static restoreBinary(bytes, registry, binaryOptions) {
+    return new EngineRuntime(restoreBinarySnapshot(bytes, binaryOptions), registry);
   }
   getEntity(id) {
     return this.entities.find((entity) => entity.id === id);
@@ -299,7 +1348,7 @@ function cloneJson(value) {
   }
   return value;
 }
-function isRecord2(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -473,7 +1522,6 @@ function finite(value, label) {
   if (typeof value !== "number" || !Number.isFinite(value))
     throw new Error(`${label} must be finite`);
 }
-
 // src/sdk/movementCapability.ts
 var MOVEMENT_CAPABILITY = "movement.state";
 var MOVEMENT_EFFECT_ID = "movement.integrate";
@@ -2333,14 +3381,14 @@ function clone3(value) {
 }
 // src/presentation-sdk/index.ts
 function validateAnimationSettings(value) {
-  if (!isRecord3(value) || value.schemaVersion !== 1 || typeof value.id !== "string" || typeof value.channel !== "string" || !positiveInteger(value.durationTicks) || !integer(value.priority) || !INTERRUPTIONS.has(value.interruption) || !Array.isArray(value.tracks))
+  if (!isRecord4(value) || value.schemaVersion !== 1 || typeof value.id !== "string" || typeof value.channel !== "string" || !positiveInteger(value.durationTicks) || !integer(value.priority) || !INTERRUPTIONS.has(value.interruption) || !Array.isArray(value.tracks))
     throw new Error("Malformed animation settings");
   assertKeys(value, ["schemaVersion", "id", "channel", "durationTicks", "priority", "interruption", "tracks"], "animation settings");
   validateId2(value.id, "animation ID");
   validateId2(value.channel, "animation channel");
   const ids = new Set;
   for (const track of value.tracks) {
-    if (!isRecord3(track) || typeof track.id !== "string" || !Array.isArray(track.keyframes))
+    if (!isRecord4(track) || typeof track.id !== "string" || !Array.isArray(track.keyframes))
       throw new Error("Malformed animation track");
     assertKeys(track, ["id", "keyframes"], "animation track");
     validateId2(track.id, "animation track ID");
@@ -2349,7 +3397,7 @@ function validateAnimationSettings(value) {
     ids.add(track.id);
     let previous = -1;
     for (const keyframe of track.keyframes) {
-      if (!isRecord3(keyframe) || !nonNegativeInteger(keyframe.tick) || keyframe.tick > value.durationTicks || keyframe.tick <= previous)
+      if (!isRecord4(keyframe) || !nonNegativeInteger(keyframe.tick) || keyframe.tick > value.durationTicks || keyframe.tick <= previous)
         throw new Error("Invalid animation keyframe");
       assertKeys(keyframe, ["tick", "value"], "animation keyframe");
       assertJsonValue(keyframe.value);
@@ -2361,7 +3409,7 @@ function validateAnimationSettings(value) {
   assertJsonValue(value);
 }
 function validatePresentationEvent(value) {
-  if (!isRecord3(value) || value.schemaVersion !== 1 || value.type !== "play" && value.type !== "cancel" || typeof value.eventId !== "string")
+  if (!isRecord4(value) || value.schemaVersion !== 1 || value.type !== "play" && value.type !== "cancel" || typeof value.eventId !== "string")
     throw new Error("Malformed presentation event");
   assertKeys(value, ["schemaVersion", "type", "eventId", "channel", "animationId", "instanceId", "priority", "payload"], "presentation event");
   validateId2(value.eventId, "presentation event ID");
@@ -2382,12 +3430,12 @@ function validatePresentationEvent(value) {
   assertJsonValue(value);
 }
 function validatePresentationRuntimeSettings(value) {
-  if (!isRecord3(value) || value.schemaVersion !== 1 || typeof value.runtimeId !== "string" || !nonNegativeInteger(value.tick) || !nonNegativeInteger(value.sequence) || !Array.isArray(value.active) || !Array.isArray(value.pending))
+  if (!isRecord4(value) || value.schemaVersion !== 1 || typeof value.runtimeId !== "string" || !nonNegativeInteger(value.tick) || !nonNegativeInteger(value.sequence) || !Array.isArray(value.active) || !Array.isArray(value.pending))
     throw new Error("Malformed presentation runtime settings");
   assertKeys(value, ["schemaVersion", "runtimeId", "tick", "sequence", "active", "pending"], "presentation runtime settings");
   validateId2(value.runtimeId, "presentation runtime ID");
   for (const active of value.active) {
-    if (!isRecord3(active) || typeof active.instanceId !== "string" || typeof active.animationId !== "string" || typeof active.channel !== "string" || !nonNegativeInteger(active.startTick) || !integer(active.priority))
+    if (!isRecord4(active) || typeof active.instanceId !== "string" || typeof active.animationId !== "string" || typeof active.channel !== "string" || !nonNegativeInteger(active.startTick) || !integer(active.priority))
       throw new Error("Malformed active animation");
     assertKeys(active, ["instanceId", "animationId", "channel", "startTick", "priority"], "active animation");
     validateId2(active.instanceId, "presentation instance ID");
@@ -2528,7 +3576,7 @@ function assertKeys(value, allowed, name) {
     if (!keys.has(key))
       throw new Error(`Unknown ${name} field '${key}'`);
 }
-function isRecord3(value) {
+function isRecord4(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function integer(value) {
@@ -2603,6 +3651,11 @@ export {
   validateActorEligibilityConstraintLifetime,
   validateActorEligibilityConstraint,
   validateActionModifier,
+  u8,
+  transformBinarySchema,
+  struct,
+  schemaIdentity,
+  restoreBinarySnapshot,
   registerTransformEffects,
   registerParticipationSystem,
   registerParticipationCommands,
@@ -2615,12 +3668,27 @@ export {
   registerCounterCommands,
   presentation,
   participationSystemDefinition,
+  packedSnapshot,
   numericSystemDefinition,
   movementSystemDefinition,
+  movementBinarySchema,
   isCollisionCommandBinding,
   isCollisionAllowed,
   isActorEligible,
+  f64,
+  f32,
   engine,
+  encodeWithSchema,
+  encodeSettings,
+  encodeSchema,
+  encodePackedSnapshotWithDiagnostics,
+  encodePackedSnapshot,
+  encodeFrame,
+  decodeWithSchema,
+  decodeSettings,
+  decodeSchema,
+  decodePackedSnapshot,
+  decodeFrame,
   createTriggerActivation,
   createTransformState,
   createTickTriggerEvent,
@@ -2643,8 +3711,11 @@ export {
   createCollisionFilter,
   createCollisionEnterTriggerEvent,
   createCollisionCommandBinding,
+  createBinaryView,
+  createBinarySchemaRegistry,
   createAudioSettings,
   createAudioRuntime,
+  createArenaStorage,
   createActorEligibilityConstraintTemplate,
   createActorEligibilityConstraintLifetime,
   createActorEligibilityConstraint,
@@ -2656,8 +3727,13 @@ export {
   collectAssetReferences,
   canonicalizeCounterStates,
   calculateRadialVelocityDelta,
+  bool,
+  binarySnapshot,
+  binaryBackedTransform,
+  binary,
   audio,
   assertJsonValue,
+  arrayBufferStorage,
   applyRadialVelocityDelta,
   applyActionModifiers,
   advanceTemporalModifier,
@@ -2676,7 +3752,16 @@ export {
   SeededRandom,
   STRUCTURE_LIFECYCLE_SCHEMA_VERSION,
   STRUCTURE_LIFECYCLE_DURATION_UNITS,
+  ROAST_PACKED_SCHEMA_VERSION,
+  ROAST_PACKED_FRAME_TYPE,
+  ROAST_BINARY_SCHEMA_VERSION,
+  ROAST_BINARY_PROTOCOL_VERSION,
+  ROAST_BINARY_FRAME_TYPE,
   PresentationRuntime,
+  PackedTransformView,
+  PackedSnapshotView,
+  PackedMovementView,
+  PackedEntityView,
   PARTICIPATION_SET_PHYSICS_EFFECT_ID,
   PARTICIPATION_SET_DRAWING_EFFECT_ID,
   PARTICIPATION_EFFECT_IDS,
@@ -2717,6 +3802,8 @@ export {
   COLLISION_COMMAND_TYPE,
   COLLISION_COMMAND_SCHEMA_VERSION,
   COLLISION_CATEGORIES,
+  BinarySchemaRegistry,
+  BinaryBackedTransform,
   AudioRuntime,
   AudioEmitter,
   ApplicationAudioMixer,
